@@ -25,36 +25,43 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Trigger Cloud Run Job
+      - name: Install dependencies
         run: |
-          SUPPLIER_ARG=""
-          DRY_RUN_ARG=""
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
 
-          if [ -n "${{ inputs.supplier }}" ]; then
-            SUPPLIER_ARG="--supplier ${{ inputs.supplier }}"
-          fi
-
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            DRY_RUN_ARG="--dry-run"
-          fi
-
-          gcloud run jobs execute cfsa-sync \
-            --region us-central1 \
-            --project cfsa-price-sync \
-            --args="--trigger=schedule ${SUPPLIER_ARG} ${DRY_RUN_ARG}" \
-            --wait
-
-      - name: Check job result
+      - name: Write GCP service account key
         run: |
-          STATUS=$(gcloud run jobs executions list \
-            --job=cfsa-sync \
-            --region=us-central1 \
-            --project=cfsa-price-sync \
-            --limit=1 \
-            --format="value(status.completionTime)")
-          echo "Last execution completed: $STATUS"
+          echo '${{ secrets.GCP_SA_KEY }}' > sa-key.json
+          chmod 600 sa-key.json
+
+      - name: Run price sync
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: sa-key.json
+          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          SUPPLIER_FILTER: ${{ inputs.supplier }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GCP_PROJECT: cfsa-price-sync
+          SHEETS_SPREADSHEET_ID: 1YRVzl7E48Y8kQ3V6yJbNrzj8QqqH7016tEVQ0IkH9Co
+        run: |
+          ARGS="--trigger=schedule"
+          if [ -n "$SUPPLIER_FILTER" ]; then ARGS="$ARGS --supplier $SUPPLIER_FILTER"; fi
+          if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python -m src.main $ARGS
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-logs-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7
