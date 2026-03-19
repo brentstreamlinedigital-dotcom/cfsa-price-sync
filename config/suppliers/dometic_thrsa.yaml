@@ -1,6 +1,6 @@
 supplier_key: dometic_thrsa
 display_name: Dometic (THRSA)
-active: true
+active: false
 
 source:
   type: email
@@ -17,7 +17,7 @@ source:
     - pdf
 
 scrape_fallback:
-  enabled: true
+  enabled: false
   days_threshold: 14
   url: https://dometic.com/za/dealer
   strategy: table

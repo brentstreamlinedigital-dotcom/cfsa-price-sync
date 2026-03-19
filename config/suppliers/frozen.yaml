@@ -1,6 +1,6 @@
 supplier_key: frozen
 display_name: Frozen
-active: true
+active: false
 
 source:
   type: email
@@ -16,7 +16,7 @@ source:
     - csv
 
 scrape_fallback:
-  enabled: true
+  enabled: false
   days_threshold: 14
   url: https://frozen.co.za/dealer-prices
   strategy: table

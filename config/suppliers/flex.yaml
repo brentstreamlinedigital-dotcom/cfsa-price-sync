@@ -18,18 +18,15 @@ source:
 scrape_fallback:
   enabled: true
   days_threshold: 14
-  url: https://flexfridge.co.za/dealer-prices
-  strategy: table
+  url: https://www.flexadventures.co.za/collections/fridge-freezers
+  strategy: shopify_json
 
 # Actual column headers from Flex sheet:
 # SKU | Description | Cost Inc | Flex Price | CFSA | Delivery Charge | Delivery | Profit
 column_map:
-  sku: SKU
-  description: Description
-  cost_inc: Cost Inc
-  rrp: Flex Price
-  delivery_charged: Delivery Charge
-  delivery_cost: Delivery
+  sku: sku
+  description: description
+  rrp: price
 
 sheet_name: null
 skip_rows: 0

@@ -1,6 +1,6 @@
 supplier_key: tsunami
 display_name: Tsunami Coolers
-active: true
+active: false
 
 source:
   type: email
@@ -16,7 +16,7 @@ source:
     - csv
 
 scrape_fallback:
-  enabled: true
+  enabled: false
   days_threshold: 14
   url: https://tsunamicoolers.co.za/dealer-prices
   strategy: table

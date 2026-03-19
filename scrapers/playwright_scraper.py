@@ -2,9 +2,11 @@
 Playwright-based scraper for supplier websites.
 
 Supports:
-- table    — extract the largest/first HTML table on the page
-- pagination — follow next-page links until exhausted
-- login    — form-based auth with credentials from Secret Manager
+- table        — extract the largest/first HTML table on the page
+- pagination   — follow next-page links until exhausted
+- shopify_json — fetch Shopify collection products.json (no browser needed)
+- product_grid — scrape WooCommerce/Shopify product cards from listing pages
+- login        — form-based auth with credentials from Secret Manager
 
 Usage:
     scraper = PlaywrightScraper(config.model_dump())
@@ -14,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
 import pandas as pd
+import requests
 from playwright.async_api import Page, async_playwright
 
 from .base_scraper import BaseScraper
@@ -34,6 +38,10 @@ class PlaywrightScraper(BaseScraper):
 
         if not url:
             raise ValueError("scrape_fallback.url is required")
+
+        # shopify_json doesn't need a browser
+        if strategy == "shopify_json":
+            return self._fetch_shopify_json(url, scrape_cfg)
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -59,6 +67,8 @@ class PlaywrightScraper(BaseScraper):
                     df = await self._extract_table(page)
                 elif strategy == "pagination":
                     df = await self._extract_with_pagination(page)
+                elif strategy == "product_grid":
+                    df = await self._extract_product_grid(page, url, scrape_cfg)
                 else:
                     raise ValueError(f"Unknown scrape strategy: {strategy!r}")
 
@@ -70,6 +80,60 @@ class PlaywrightScraper(BaseScraper):
 
             finally:
                 await browser.close()
+
+    # ------------------------------------------------------------------
+    # Shopify JSON (no browser)
+    # ------------------------------------------------------------------
+
+    def _fetch_shopify_json(self, collection_url: str, cfg: dict) -> pd.DataFrame:
+        """Fetch all products from a Shopify store's collection products.json endpoint."""
+        # Strip trailing slash and query params from collection URL
+        base = re.sub(r'\?.*$', '', collection_url.rstrip('/'))
+        brand_filter = cfg.get("brand_filter", "")  # optional: only keep products matching brand
+        rows = []
+        page = 1
+
+        while True:
+            api_url = f"{base}/products.json?limit=250&page={page}"
+            try:
+                resp = requests.get(api_url, timeout=20,
+                                    headers={"User-Agent": "Mozilla/5.0"})
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                log.error("[%s] shopify_json fetch failed page %d: %s",
+                          self.config.get("supplier_key", "?"), page, e)
+                break
+
+            products = data.get("products", [])
+            if not products:
+                break
+
+            for product in products:
+                title = product.get("title", "")
+                # Optional brand filter — skip products not matching
+                if brand_filter and brand_filter.lower() not in title.lower():
+                    continue
+                for variant in product.get("variants", []):
+                    rows.append({
+                        "sku": variant.get("sku", ""),
+                        "description": title,
+                        "price": variant.get("price", ""),
+                        "compare_at_price": variant.get("compare_at_price", ""),
+                        "available": variant.get("available", True),
+                        "inventory_quantity": variant.get("inventory_quantity", 0),
+                        "variant_title": variant.get("title", ""),
+                    })
+
+            # Shopify returns < 250 items on last page
+            if len(products) < 250:
+                break
+            page += 1
+
+        df = pd.DataFrame(rows)
+        log.info("[%s] shopify_json: %d variants from %s",
+                 self.config.get("supplier_key", "?"), len(df), collection_url)
+        return df
 
     # ------------------------------------------------------------------
     # Login
@@ -151,9 +215,93 @@ class PlaywrightScraper(BaseScraper):
         if not all_dfs:
             return pd.DataFrame()
 
-        # Stack pages, keeping headers from first page only
         combined = pd.concat(all_dfs, ignore_index=True)
         return combined
+
+    # ------------------------------------------------------------------
+    # Product grid (WooCommerce / Shopify storefront)
+    # ------------------------------------------------------------------
+
+    async def _extract_product_grid(self, page: Page, base_url: str, cfg: dict) -> pd.DataFrame:
+        """Scrape product cards from a WooCommerce or Shopify storefront listing page."""
+        brand_filter = cfg.get("brand_filter", "")
+        all_rows = []
+        page_num = 1
+        max_pages = 20  # safety cap
+
+        while page_num <= max_pages:
+            await page.wait_for_load_state("networkidle", timeout=30_000)
+
+            rows = await page.evaluate(
+                """
+                () => {
+                    const results = [];
+                    // WooCommerce: ul.products li.product
+                    const wc = document.querySelectorAll('ul.products li.product, .products-grid .product-item');
+                    if (wc.length > 0) {
+                        wc.forEach(item => {
+                            const titleEl = item.querySelector(
+                                '.woocommerce-loop-product__title, h2.product-title, h3, .product-name a'
+                            );
+                            const priceEl = item.querySelector(
+                                '.price ins .woocommerce-Price-amount bdi, ' +
+                                '.price .woocommerce-Price-amount bdi, ' +
+                                '.woocommerce-Price-amount bdi'
+                            );
+                            const skuEl = item.querySelector('[data-sku], .sku');
+                            const linkEl = item.querySelector('a.woocommerce-LoopProduct-link, a');
+                            results.push({
+                                description: titleEl ? titleEl.innerText.trim() : '',
+                                price: priceEl ? priceEl.innerText.replace(/[^0-9.,]/g, '').trim() : '',
+                                sku: skuEl ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
+                                url: linkEl ? linkEl.href : ''
+                            });
+                        });
+                    }
+                    return results;
+                }
+                """
+            )
+
+            if not rows:
+                log.warning("[%s] product_grid: no products found on page %d",
+                            self.config.get("supplier_key", "?"), page_num)
+                break
+
+            for row in rows:
+                if brand_filter and brand_filter.lower() not in row.get("description", "").lower():
+                    continue
+                all_rows.append(row)
+
+            log.debug("[%s] product_grid page %d: %d products",
+                      self.config.get("supplier_key", "?"), page_num, len(rows))
+
+            # Try to navigate to next page
+            next_link = page.locator(
+                'a.next.page-numbers, '
+                '.woocommerce-pagination a:text("→"), '
+                '[aria-label="Next page"], '
+                'a:text("Next →"), '
+                'a:text("Next")'
+            ).first
+
+            try:
+                count = await next_link.count()
+                if not count:
+                    break
+                next_href = await next_link.get_attribute("href")
+                if not next_href:
+                    break
+                await page.goto(next_href, wait_until="networkidle", timeout=30_000)
+                page_num += 1
+            except Exception:
+                break
+
+        df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
+        # Clean prices — remove commas e.g. "8,495.00" → "8495.00"
+        if "price" in df.columns:
+            df["price"] = df["price"].str.replace(",", "", regex=False)
+        return df
 
     # ------------------------------------------------------------------
     # Helpers

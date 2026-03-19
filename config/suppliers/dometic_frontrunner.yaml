@@ -1,6 +1,6 @@
 supplier_key: dometic_frontrunner
 display_name: Dometic (Front Runner)
-active: true
+active: false
 
 source:
   type: email
@@ -18,7 +18,7 @@ source:
     - pdf
 
 scrape_fallback:
-  enabled: true
+  enabled: false
   days_threshold: 14
   url: https://frontrunneroutfitters.com/za/dealer
   strategy: table

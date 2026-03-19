@@ -18,26 +18,16 @@ source:
 scrape_fallback:
   enabled: true
   days_threshold: 7
-  url: https://snomaster.co.za/dealer-login
-  strategy: table
-  # Uncomment and fill in when dealer portal credentials are available:
-  # auth:
-  #   login_url: https://snomaster.co.za/dealer-login
-  #   username_field: "#email"
-  #   password_field: "#password"
-  #   username_secret: SNOMASTER_USER
-  #   password_secret: SNOMASTER_PASS
+  url: https://snomaster.co.za/product-category/camping-fridges/
+  strategy: product_grid
 
 # Actual column headers from Snomaster sheet:
 # Unnamed: 0 (empty) | SKU | Description | Cost Incl | RRP | CFSA | Delivery Charged | Delivery cost
 # Note: first column is always empty — use column names not indices
 column_map:
-  sku: SKU
-  description: Description
-  cost_inc: Cost Incl
-  rrp: RRP
-  delivery_charged: Delivery Charged
-  delivery_cost: Delivery cost
+  sku: sku
+  description: description
+  rrp: price
 
 sheet_name: null
 skip_rows: 0

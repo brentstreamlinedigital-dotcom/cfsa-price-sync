@@ -1,6 +1,6 @@
 supplier_key: coldfactor
 display_name: ColdFactor
-active: true
+active: false
 
 source:
   type: email
@@ -15,7 +15,7 @@ source:
     - csv
 
 scrape_fallback:
-  enabled: true
+  enabled: false
   days_threshold: 14
   url: https://coldfactor.co.za/dealer-prices
   strategy: table

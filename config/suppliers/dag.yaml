@@ -1,6 +1,6 @@
 supplier_key: dag
 display_name: D.A.G
-active: true
+active: false
 
 source:
   type: email
@@ -16,7 +16,7 @@ source:
     - csv
 
 scrape_fallback:
-  enabled: true
+  enabled: false
   days_threshold: 14
   url: https://dag.co.za/dealer-prices
   strategy: table

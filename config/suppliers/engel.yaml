@@ -18,18 +18,14 @@ source:
 scrape_fallback:
   enabled: true
   days_threshold: 14
-  url: https://engelsa.co.za/trade-prices
-  strategy: table
+  url: https://www.4x4megaworldonline.com/refrigeration/
+  strategy: product_grid
+  brand_filter: "Engel"  # only keep products with "Engel" in the title
 
-# Actual column headers from Engel sheet:
-# SKU | Description | Cost Inc | Full Retails | Contact Price | Display Price | Delivery Charged | Delivery Cost
 column_map:
-  sku: SKU
-  description: Description
-  cost_inc: Cost Inc
-  rrp: Full Retails
-  delivery_charged: Delivery Charged
-  delivery_cost: Delivery Cost
+  sku: sku
+  description: description
+  rrp: price
 
 sheet_name: null   # first sheet
 skip_rows: 0
