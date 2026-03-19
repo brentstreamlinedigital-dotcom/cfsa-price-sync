@@ -21,7 +21,10 @@ from typing import Optional
 
 import pandas as pd
 import requests
+import urllib3
 from playwright.async_api import Page, async_playwright
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from .base_scraper import BaseScraper
 
@@ -96,7 +99,7 @@ class PlaywrightScraper(BaseScraper):
         while True:
             api_url = f"{base}/products.json?limit=250&page={page}"
             try:
-                resp = requests.get(api_url, timeout=20,
+                resp = requests.get(api_url, timeout=20, verify=False,
                                     headers={"User-Agent": "Mozilla/5.0"})
                 resp.raise_for_status()
                 data = resp.json()
@@ -230,34 +233,53 @@ class PlaywrightScraper(BaseScraper):
         max_pages = 20  # safety cap
 
         while page_num <= max_pages:
-            await page.wait_for_load_state("networkidle", timeout=30_000)
+            # Wait for WooCommerce product grid to render (handles AJAX-loaded content)
+            try:
+                await page.wait_for_selector(
+                    "ul.products li.product, .products li.product, "
+                    ".woocommerce-loop-product__title, .product-title",
+                    timeout=20_000
+                )
+            except Exception:
+                log.warning("[%s] product_grid: timed out waiting for products on page %d",
+                            self.config.get("supplier_key", "?"), page_num)
+                # Log first 500 chars of page to help debug
+                snippet = await page.evaluate("() => document.body.innerText.substring(0, 300)")
+                log.debug("[%s] Page snippet: %s", self.config.get("supplier_key", "?"), snippet)
+                break
 
             rows = await page.evaluate(
                 """
                 () => {
                     const results = [];
-                    // WooCommerce: ul.products li.product
-                    const wc = document.querySelectorAll('ul.products li.product, .products-grid .product-item');
-                    if (wc.length > 0) {
-                        wc.forEach(item => {
-                            const titleEl = item.querySelector(
-                                '.woocommerce-loop-product__title, h2.product-title, h3, .product-name a'
-                            );
-                            const priceEl = item.querySelector(
-                                '.price ins .woocommerce-Price-amount bdi, ' +
-                                '.price .woocommerce-Price-amount bdi, ' +
-                                '.woocommerce-Price-amount bdi'
-                            );
-                            const skuEl = item.querySelector('[data-sku], .sku');
-                            const linkEl = item.querySelector('a.woocommerce-LoopProduct-link, a');
+                    // Try WooCommerce product grid selectors (multiple theme variants)
+                    const items = document.querySelectorAll(
+                        'ul.products li.product, ' +
+                        '.products li.product, ' +
+                        '.woocommerce ul.products li'
+                    );
+                    items.forEach(item => {
+                        const titleEl = item.querySelector(
+                            '.woocommerce-loop-product__title, h2, h3, .product-title, .entry-title'
+                        );
+                        // Price: prefer "sale" price (ins), fall back to regular
+                        const priceEl = item.querySelector(
+                            '.price ins .woocommerce-Price-amount bdi, ' +
+                            '.price .woocommerce-Price-amount bdi, ' +
+                            '.woocommerce-Price-amount bdi, ' +
+                            '.price'
+                        );
+                        const skuEl = item.querySelector('[data-sku], .sku');
+                        const linkEl = item.querySelector('a.woocommerce-LoopProduct-link, a');
+                        if (titleEl) {
                             results.push({
-                                description: titleEl ? titleEl.innerText.trim() : '',
+                                description: titleEl.innerText.trim(),
                                 price: priceEl ? priceEl.innerText.replace(/[^0-9.,]/g, '').trim() : '',
                                 sku: skuEl ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
                                 url: linkEl ? linkEl.href : ''
                             });
-                        });
-                    }
+                        }
+                    });
                     return results;
                 }
                 """
