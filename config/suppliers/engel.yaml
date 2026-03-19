@@ -1,0 +1,59 @@
+supplier_key: engel
+display_name: Engel
+active: true
+
+source:
+  type: email
+  email_from_domains:
+    - engelsa.co.za
+    - engel.com.au
+  email_subject_contains:
+    - pricelist
+    - price list
+    - price update
+  attachment_types:
+    - xlsx
+    - csv
+
+scrape_fallback:
+  enabled: true
+  days_threshold: 14
+  url: https://engelsa.co.za/trade-prices
+  strategy: table
+
+# Actual column headers from Engel sheet:
+# SKU | Description | Cost Inc | Full Retails | Contact Price | Display Price | Delivery Charged | Delivery Cost
+column_map:
+  sku: SKU
+  description: Description
+  cost_inc: Cost Inc
+  rrp: Full Retails
+  delivery_charged: Delivery Charged
+  delivery_cost: Delivery Cost
+
+sheet_name: null   # first sheet
+skip_rows: 0
+
+price_formula:
+  key: rrp_x_0.967
+  expression: "rrp * 0.967"   # Contact Price ≈ Full Retails × 0.967 (e.g. 8699/8995)
+
+stock_status_map:
+  "In Stock": "In Stock"
+  "Available": "In Stock"
+  "Out of Stock": "Out of Stock"
+  "Sold Out": "Out of Stock"
+  "Discontinued": "Discontinued"
+  "Not available": "Out of Stock"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: false
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

@@ -1,0 +1,58 @@
+supplier_key: frozen
+display_name: Frozen
+active: true
+
+source:
+  type: email
+  email_from_domains:
+    - frozen.co.za
+    - frozensa.co.za
+  email_subject_contains:
+    - pricelist
+    - price list
+    - price update
+  attachment_types:
+    - xlsx
+    - csv
+
+scrape_fallback:
+  enabled: true
+  days_threshold: 14
+  url: https://frozen.co.za/dealer-prices
+  strategy: table
+
+# Actual column headers from Frozen sheet:
+# SKU | Description | Cost Inc | Full Retails | Price | Delivery | Profit | Margin
+column_map:
+  sku: SKU
+  description: Description
+  cost_inc: Cost Inc
+  rrp: Full Retails
+  delivery_cost: Delivery
+
+sheet_name: null
+skip_rows: 0
+
+price_formula:
+  key: rrp_x_0.847
+  expression: "rrp * 0.847"   # Price ≈ Full Retails × 0.847 (e.g. 4999/5899 ≈ 0.847)
+
+stock_status_map:
+  "In Stock": "In Stock"
+  "Available": "In Stock"
+  "0": "Out of Stock"
+  "Out of Stock": "Out of Stock"
+  "Sold Out": "Out of Stock"
+  "Discontinued": "Discontinued"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: false
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

@@ -1,0 +1,60 @@
+supplier_key: dometic_frontrunner
+display_name: Dometic (Front Runner)
+active: true
+
+source:
+  type: email
+  email_from_domains:
+    - frontrunneroutfitters.com
+    - dometic.com
+  email_subject_contains:
+    - pricelist
+    - price list
+    - dealer price
+    - trade price
+  attachment_types:
+    - xlsx
+    - csv
+    - pdf
+
+scrape_fallback:
+  enabled: true
+  days_threshold: 14
+  url: https://frontrunneroutfitters.com/za/dealer
+  strategy: table
+
+# Actual column headers from Dometic Frontrunner sheet:
+# SKU | Description | Cost Incl | RRP | CFSA | Delivery Charged | Delivery cost | Profit
+column_map:
+  sku: SKU
+  description: Description
+  cost_inc: Cost Incl
+  rrp: RRP
+  delivery_charged: Delivery Charged
+  delivery_cost: Delivery cost
+
+sheet_name: null
+skip_rows: 0
+
+price_formula:
+  key: rrp_x_0.999
+  expression: "rrp * 0.999"   # CFSA ≈ RRP (e.g. 10369/10375 ≈ 0.999); effectively same price
+
+stock_status_map:
+  "In Stock": "In Stock"
+  "Available": "In Stock"
+  "Out of Stock": "Out of Stock"
+  "Sold Out": "Out of Stock"
+  "Discontinued": "Discontinued"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: false
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

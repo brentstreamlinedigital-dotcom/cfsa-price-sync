@@ -1,0 +1,57 @@
+supplier_key: tsunami
+display_name: Tsunami Coolers
+active: true
+
+source:
+  type: email
+  email_from_domains:
+    - tsunamicoolers.co.za
+    - tsunami.co.za
+  email_subject_contains:
+    - pricelist
+    - price list
+    - price update
+  attachment_types:
+    - xlsx
+    - csv
+
+scrape_fallback:
+  enabled: true
+  days_threshold: 14
+  url: https://tsunamicoolers.co.za/dealer-prices
+  strategy: table
+
+# Actual column headers from Tsunami sheet:
+# SKU | Description | Cost Inc | Full Retails | Price | Delivery | Delivery.1 | Profit
+# Note: Delivery.1 is a duplicate delivery column (pandas auto-renames); ignore it.
+column_map:
+  sku: SKU
+  description: Description
+  cost_inc: Cost Inc
+  rrp: Full Retails
+  delivery_cost: Delivery
+
+sheet_name: null
+skip_rows: 0
+
+price_formula:
+  key: rrp_x_1.0
+  expression: "rrp * 1.0"   # Price = Full Retails (e.g. 2199 = 2199); same price, no discount
+
+stock_status_map:
+  "In Stock": "In Stock"
+  "Available": "In Stock"
+  "Out of Stock": "Out of Stock"
+  "Sold Out": "Out of Stock"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: false
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

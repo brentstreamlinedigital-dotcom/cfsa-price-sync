@@ -1,0 +1,57 @@
+supplier_key: flex
+display_name: Flex
+active: true
+
+source:
+  type: email
+  email_from_domains:
+    - flexfridge.co.za
+    - flexoutdoor.co.za
+  email_subject_contains:
+    - pricelist
+    - price list
+    - price update
+  attachment_types:
+    - xlsx
+    - csv
+
+scrape_fallback:
+  enabled: true
+  days_threshold: 14
+  url: https://flexfridge.co.za/dealer-prices
+  strategy: table
+
+# Actual column headers from Flex sheet:
+# SKU | Description | Cost Inc | Flex Price | CFSA | Delivery Charge | Delivery | Profit
+column_map:
+  sku: SKU
+  description: Description
+  cost_inc: Cost Inc
+  rrp: Flex Price
+  delivery_charged: Delivery Charge
+  delivery_cost: Delivery
+
+sheet_name: null
+skip_rows: 0
+
+price_formula:
+  key: rrp_x_0.992
+  expression: "rrp * 0.992"   # CFSA ≈ Flex Price × 0.992 (e.g. 1289/1299)
+
+stock_status_map:
+  "In Stock": "In Stock"
+  "Available": "In Stock"
+  "Out of Stock": "Out of Stock"
+  "Sold Out": "Out of Stock"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: false
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

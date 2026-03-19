@@ -1,0 +1,69 @@
+name: Build and Deploy to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'scrapers/**'
+      - 'config/**'
+      - 'requirements.txt'
+      - 'Dockerfile'
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: europe-west1
+  JOB_NAME: cfsa-price-sync
+  IMAGE: gcr.io/${{ secrets.GCP_PROJECT_ID }}/cfsa-price-sync
+
+jobs:
+  build-and-deploy:
+    name: Build image and update Cloud Run Job
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build Docker image
+        run: docker build -t $IMAGE:$GITHUB_SHA -t $IMAGE:latest .
+
+      - name: Push image
+        run: |
+          docker push $IMAGE:$GITHUB_SHA
+          docker push $IMAGE:latest
+
+      - name: Deploy / update Cloud Run Job
+        run: |
+          gcloud run jobs update $JOB_NAME \
+            --image $IMAGE:$GITHUB_SHA \
+            --region $REGION \
+            --service-account cfsa-sync@$PROJECT_ID.iam.gserviceaccount.com \
+            --set-secrets "SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest" \
+            --memory 1Gi \
+            --cpu 1 \
+            --max-retries 2 \
+            --task-timeout 1800 \
+            || gcloud run jobs create $JOB_NAME \
+                --image $IMAGE:$GITHUB_SHA \
+                --region $REGION \
+                --service-account cfsa-sync@$PROJECT_ID.iam.gserviceaccount.com \
+                --set-secrets "SHOPIFY_ACCESS_TOKEN=SHOPIFY_ACCESS_TOKEN:latest" \
+                --memory 1Gi \
+                --cpu 1 \
+                --max-retries 2 \
+                --task-timeout 1800
+
+      - name: Deployment summary
+        run: |
+          echo "Deployed image: $IMAGE:$GITHUB_SHA"
+          echo "Job: $JOB_NAME in $REGION"

@@ -1,0 +1,58 @@
+supplier_key: coldfactor
+display_name: ColdFactor
+active: true
+
+source:
+  type: email
+  email_from_domains:
+    - coldfactor.co.za
+  email_subject_contains:
+    - pricelist
+    - price list
+    - price update
+  attachment_types:
+    - xlsx
+    - csv
+
+scrape_fallback:
+  enabled: true
+  days_threshold: 14
+  url: https://coldfactor.co.za/dealer-prices
+  strategy: table
+
+# Actual column headers from ColdFactor sheet:
+# SKU | Description | Cost Inc | Full Retails | Contact Price | Delivery Charged | Delivery Cost | Profit
+# Note: SKUs may have trailing spaces (e.g. "CF45GES  ") — strip them.
+column_map:
+  sku: SKU
+  description: Description
+  cost_inc: Cost Inc
+  rrp: Full Retails
+  delivery_charged: Delivery Charged
+  delivery_cost: Delivery Cost
+
+sheet_name: null
+skip_rows: 0
+
+price_formula:
+  key: rrp_x_0.9998
+  expression: "rrp * 0.9998"   # Contact Price ≈ Full Retails (e.g. 5749 ≈ 5750)
+
+stock_status_map:
+  "In Stock": "In Stock"
+  "Available": "In Stock"
+  "Out of Stock": "Out of Stock"
+  "Sold Out": "Out of Stock"
+  "Discontinued": "Discontinued"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: true   # strip trailing spaces from "CF45GES  "
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

@@ -1,0 +1,60 @@
+name: Daily Price Sync
+
+on:
+  schedule:
+    # 07:00 SAST = 05:00 UTC
+    - cron: '0 5 * * *'
+    # 13:00 SAST = 11:00 UTC (midday check)
+    - cron: '0 11 * * *'
+  workflow_dispatch:
+    inputs:
+      supplier:
+        description: 'Run for a single supplier (leave blank for all)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (no writes)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  sync:
+    name: Sync supplier prices
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Trigger Cloud Run Job
+        run: |
+          SUPPLIER_ARG=""
+          DRY_RUN_ARG=""
+
+          if [ -n "${{ inputs.supplier }}" ]; then
+            SUPPLIER_ARG="--supplier ${{ inputs.supplier }}"
+          fi
+
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_ARG="--dry-run"
+          fi
+
+          gcloud run jobs execute cfsa-sync \
+            --region us-central1 \
+            --project cfsa-price-sync \
+            --args="--trigger=schedule ${SUPPLIER_ARG} ${DRY_RUN_ARG}" \
+            --wait
+
+      - name: Check job result
+        run: |
+          STATUS=$(gcloud run jobs executions list \
+            --job=cfsa-sync \
+            --region=us-central1 \
+            --project=cfsa-price-sync \
+            --limit=1 \
+            --format="value(status.completionTime)")
+          echo "Last execution completed: $STATUS"

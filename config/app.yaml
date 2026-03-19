@@ -1,0 +1,50 @@
+# Global application configuration
+# All secrets should be stored in Google Secret Manager — reference keys here only.
+
+app:
+  name: cfsa-price-sync
+  version: "1.0.0"
+  timezone: Africa/Johannesburg
+
+google:
+  # Service account JSON path (local dev) or use Application Default Credentials (Cloud Run)
+  service_account_file: null   # set to path in .env for local dev
+  project_id: cfsa-price-sync
+
+  sheets:
+    # The Google Sheets spreadsheet ID (from the URL)
+    spreadsheet_id: 1YRVzl7E48Y8kQ3V6yJbNrzj8QqqH7016tEVQ0IkH9Co
+    master_sheet_name: master
+    supplier_log_sheet_name: supplier_log
+    error_flags_sheet_name: error_flags
+
+  gmail:
+    # The mailbox to monitor for supplier emails
+    delegate_email: bm.automations1@gmail.com
+    processed_label: cfsa/processed
+    pubsub_topic: projects/cfsa-price-sync/topics/cfsa-gmail-push
+
+shopify:
+  shop_domain: campingfridge.myshopify.com
+  # Access token stored in Secret Manager as SHOPIFY_ACCESS_TOKEN
+  api_version: "2024-10"
+
+firebase:
+  # Uses Application Default Credentials when running on Cloud Run
+  # Set GOOGLE_APPLICATION_CREDENTIALS for local dev
+  collections:
+    sync_runs: sync_runs
+    price_changes: price_changes
+    sync_errors: sync_errors
+
+alerts:
+  # Email alerts for large price changes
+  enabled: true
+  recipient: bm.automations1@gmail.com
+  price_change_threshold_pct: 15.0  # alert if price moves more than this %
+
+sync:
+  # Max rows to write to Shopify per run (safety cap)
+  shopify_write_cap: 500
+  # Dry run mode: parse + diff but don't write anywhere
+  dry_run: false
