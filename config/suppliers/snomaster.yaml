@@ -19,7 +19,7 @@ scrape_fallback:
   enabled: true
   days_threshold: 7
   url: https://snomaster.co.za/product-category/camping-fridges/
-  strategy: product_grid
+  strategy: product_pages
 
 # Actual column headers from Snomaster sheet:
 # Unnamed: 0 (empty) | SKU | Description | Cost Incl | RRP | CFSA | Delivery Charged | Delivery cost

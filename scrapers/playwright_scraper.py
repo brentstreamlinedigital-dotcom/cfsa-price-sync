@@ -72,6 +72,8 @@ class PlaywrightScraper(BaseScraper):
                     df = await self._extract_with_pagination(page)
                 elif strategy == "product_grid":
                     df = await self._extract_product_grid(page, url, scrape_cfg)
+                elif strategy == "product_pages":
+                    df = self._fetch_product_pages(url, scrape_cfg)
                 else:
                     raise ValueError(f"Unknown scrape strategy: {strategy!r}")
 
@@ -136,6 +138,113 @@ class PlaywrightScraper(BaseScraper):
         df = pd.DataFrame(rows)
         log.info("[%s] shopify_json: %d variants from %s",
                  self.config.get("supplier_key", "?"), len(df), collection_url)
+        return df
+
+    # ------------------------------------------------------------------
+    # Product pages (WooCommerce: crawl category → fetch each product page)
+    # ------------------------------------------------------------------
+
+    def _fetch_product_pages(self, category_url: str, cfg: dict) -> pd.DataFrame:
+        """
+        Two-pass scrape:
+        1. Collect all product page URLs from the category listing (static HTML)
+        2. HTTP-GET each product page and extract SKU + price from static HTML
+        Works well for WooCommerce stores where category pages load prices via JS
+        but individual product pages serve price in static HTML.
+        """
+        import re as _re
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/120.0.0.0 Safari/537.36"}
+        brand_filter = cfg.get("brand_filter", "")
+        rows = []
+        visited = set()
+
+        # Collect product URLs across all category pages
+        product_urls = []
+        page_url = category_url
+        for _ in range(20):  # max 20 category pages
+            try:
+                resp = requests.get(page_url, timeout=20, verify=False, headers=headers)
+                html = resp.text
+            except Exception as e:
+                log.error("[%s] product_pages: category fetch failed: %s",
+                          self.config.get("supplier_key", "?"), e)
+                break
+
+            # Extract product links from category page
+            links = _re.findall(
+                r'href="(https?://[^"]+/product/[^"?#]+)"',
+                html
+            )
+            for link in links:
+                if link not in visited:
+                    visited.add(link)
+                    product_urls.append(link)
+
+            # Follow pagination
+            next_page = _re.search(
+                r'href="([^"]+)" [^>]*class="[^"]*next[^"]*"',
+                html
+            )
+            if next_page:
+                page_url = next_page.group(1)
+            else:
+                break
+
+        log.info("[%s] product_pages: found %d product URLs",
+                 self.config.get("supplier_key", "?"), len(product_urls))
+
+        # Fetch each product page
+        for product_url in product_urls:
+            try:
+                resp = requests.get(product_url, timeout=20, verify=False, headers=headers)
+                html = resp.text
+
+                # Title / description
+                title_m = _re.search(
+                    r'<h1[^>]*class="[^"]*(?:product_title|entry-title)[^"]*"[^>]*>(.*?)</h1>',
+                    html, _re.DOTALL
+                )
+                title = _re.sub('<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+
+                if brand_filter and brand_filter.lower() not in title.lower():
+                    continue
+
+                # SKU
+                sku_m = _re.search(
+                    r'<span class="sku"[^>]*>(.*?)</span>|"sku"\s*:\s*"([^"]+)"',
+                    html, _re.DOTALL
+                )
+                sku = ""
+                if sku_m:
+                    sku = _re.sub('<[^>]+>', '', sku_m.group(1) or sku_m.group(2) or "").strip()
+
+                # Price — prefer sale price, fall back to regular
+                price_m = _re.search(
+                    r'<ins[^>]*>.*?<bdi>[^<]*<span[^>]*>[^<]*</span>([0-9,]+\.[0-9]+)</bdi>|'
+                    r'<bdi>[^<]*<span[^>]*>[^<]*</span>([0-9,]+\.[0-9]+)</bdi>',
+                    html, _re.DOTALL
+                )
+                price = ""
+                if price_m:
+                    raw = price_m.group(1) or price_m.group(2) or ""
+                    price = raw.replace(",", "")
+
+                if title:
+                    rows.append({
+                        "sku": sku,
+                        "description": title,
+                        "price": price,
+                        "url": product_url,
+                    })
+            except Exception as e:
+                log.warning("[%s] product_pages: failed to fetch %s: %s",
+                            self.config.get("supplier_key", "?"), product_url, e)
+
+        df = pd.DataFrame(rows) if rows else pd.DataFrame()
+        log.info("[%s] product_pages: %d products scraped",
+                 self.config.get("supplier_key", "?"), len(df))
         return df
 
     # ------------------------------------------------------------------
@@ -252,33 +361,28 @@ class PlaywrightScraper(BaseScraper):
                 """
                 () => {
                     const results = [];
-                    // Try WooCommerce product grid selectors (multiple theme variants)
-                    const items = document.querySelectorAll(
-                        'ul.products li.product, ' +
-                        '.products li.product, ' +
-                        '.woocommerce ul.products li'
+                    // Anchor from title upward — works across all WooCommerce themes
+                    const titleEls = document.querySelectorAll(
+                        '.woocommerce-loop-product__title, ' +
+                        'h2.product-title, h3.product-title, ' +
+                        '.product-name, .woocommerce-loop-product__link h2'
                     );
-                    items.forEach(item => {
-                        const titleEl = item.querySelector(
-                            '.woocommerce-loop-product__title, h2, h3, .product-title, .entry-title'
-                        );
-                        // Price: prefer "sale" price (ins), fall back to regular
-                        const priceEl = item.querySelector(
+                    titleEls.forEach(titleEl => {
+                        // Walk up to find the product container
+                        const item = titleEl.closest('li, article, .product, [class*="product"]');
+                        const priceEl = item ? item.querySelector(
                             '.price ins .woocommerce-Price-amount bdi, ' +
                             '.price .woocommerce-Price-amount bdi, ' +
-                            '.woocommerce-Price-amount bdi, ' +
-                            '.price'
-                        );
-                        const skuEl = item.querySelector('[data-sku], .sku');
-                        const linkEl = item.querySelector('a.woocommerce-LoopProduct-link, a');
-                        if (titleEl) {
-                            results.push({
-                                description: titleEl.innerText.trim(),
-                                price: priceEl ? priceEl.innerText.replace(/[^0-9.,]/g, '').trim() : '',
-                                sku: skuEl ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
-                                url: linkEl ? linkEl.href : ''
-                            });
-                        }
+                            '.woocommerce-Price-amount bdi'
+                        ) : null;
+                        const skuEl = item ? item.querySelector('[data-sku], .sku') : null;
+                        const linkEl = item ? item.querySelector('a.woocommerce-LoopProduct-link, a[href]') : null;
+                        results.push({
+                            description: titleEl.innerText.trim(),
+                            price: priceEl ? priceEl.innerText.replace(/[^0-9.,]/g, '').trim() : '',
+                            sku: skuEl ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
+                            url: linkEl ? linkEl.href : ''
+                        });
                     });
                     return results;
                 }

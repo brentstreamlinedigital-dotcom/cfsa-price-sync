@@ -19,7 +19,7 @@ scrape_fallback:
   enabled: true
   days_threshold: 14
   url: https://www.4x4megaworldonline.com/refrigeration/
-  strategy: product_grid
+  strategy: product_pages
   brand_filter: "Engel"  # only keep products with "Engel" in the title
 
 column_map:
