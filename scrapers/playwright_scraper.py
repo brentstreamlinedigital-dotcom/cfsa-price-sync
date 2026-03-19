@@ -172,12 +172,21 @@ class PlaywrightScraper(BaseScraper):
                           self.config.get("supplier_key", "?"), e)
                 break
 
-            # Extract product links from category page
-            links = _re.findall(
-                r'href="(https?://[^"]+/product/[^"?#]+)"',
+            # Extract product links — try standard WooCommerce /product/ path first,
+            # then fall back to woocommerce-LoopProduct-link anchors (custom permalinks)
+            std_links = _re.findall(
+                r'href="(https?://[^"]+/product/[^"?#]+)"', html
+            )
+            wc_links = _re.findall(
+                r'href="(https?://[^"]+)"[^>]*class="[^"]*woocommerce-LoopProduct-link[^"]*"',
                 html
             )
-            for link in links:
+            # Also find links containing woocommerce-loop-product__link class
+            wc_links2 = _re.findall(
+                r'class="[^"]*woocommerce-LoopProduct-link[^"]*"[^>]*href="(https?://[^"?#]+)"',
+                html
+            )
+            for link in (std_links or wc_links or wc_links2):
                 if link not in visited:
                     visited.add(link)
                     product_urls.append(link)
@@ -220,15 +229,15 @@ class PlaywrightScraper(BaseScraper):
                 if sku_m:
                     sku = _re.sub('<[^>]+>', '', sku_m.group(1) or sku_m.group(2) or "").strip()
 
-                # Price — prefer sale price, fall back to regular
+                # Price — prefer sale price (ins), fall back to regular price
                 price_m = _re.search(
-                    r'<ins[^>]*>.*?<bdi>[^<]*<span[^>]*>[^<]*</span>([0-9,]+\.[0-9]+)</bdi>|'
-                    r'<bdi>[^<]*<span[^>]*>[^<]*</span>([0-9,]+\.[0-9]+)</bdi>',
+                    r'<ins[^>]*>.*?<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>|'
+                    r'<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>',
                     html, _re.DOTALL
                 )
                 price = ""
                 if price_m:
-                    raw = price_m.group(1) or price_m.group(2) or ""
+                    raw = (price_m.group(1) or price_m.group(2) or "").strip()
                     price = raw.replace(",", "")
 
                 if title:
