@@ -94,6 +94,11 @@ def compute_diff(
         inc_hash = inc_row.get("row_hash")
         inc_price = _safe_float(inc_row.get("selling_price"))
 
+        # Skip rows with no/zero price — scraping likely failed for this product
+        if not inc_price or inc_price <= 0:
+            log.debug("[%s] Skipping %s — no price scraped", supplier, sku)
+            continue
+
         if sku not in master_index:
             # Brand new product
             new_rows.append(inc_row.to_dict())

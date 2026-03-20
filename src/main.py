@@ -205,7 +205,10 @@ def main(
                 _log_price_changes(firebase_logger, key, diff.changed_rows, master_df)
 
             # Sync to Shopify — skip rows that triggered price alerts
-            shopify_rows = to_write[to_write.get("_price_alerted", False) != True].to_dict("records")
+            if "_price_alerted" in to_write.columns:
+                shopify_rows = to_write[~to_write["_price_alerted"].fillna(False).astype(bool)].to_dict("records")
+            else:
+                shopify_rows = to_write.to_dict("records")
 
             if shopify_rows:
                 if len(shopify_rows) > shopify_write_cap:
