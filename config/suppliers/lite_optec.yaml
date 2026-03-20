@@ -1,0 +1,48 @@
+supplier_key: lite_optec
+display_name: Lite Optec (Frozen / Coleman / Cosmoplast)
+enabled: true
+brands:
+  - Frozen
+  - Coleman
+  - Cosmoplast
+
+# Lite Optec sends a daily XLSM email every morning
+email:
+  enabled: true
+  from_address: biancab@liteoptec.co.za
+  subject_contains: "SOH & Pricing"
+  attachment_ext: xlsm
+
+scraper:
+  enabled: false
+
+parse:
+  type: xlsx
+  sheet_name: "1A Warehouse 1 Stock"
+  header_row: 1
+  column_map:
+    sku:          Code
+    description:  Description
+    stock_qty:    "Items in stock"
+    cost_ex_vat:  "W/Sale Ex Vat"
+  # Only import rows whose Code starts with these prefixes (Frozen, Coleman, Cosmoplast)
+  sku_prefix_filter:
+    - "FC"    # Frozen Coolers
+    - "CM"    # Coleman
+    - "CP"    # Cosmoplast
+    - "CG"    # Campingaz
+  status_col: Status
+  status_active_value: ACT
+
+# cost_inc = wholesale ex VAT × 1.15 (South African VAT)
+vat_rate: 1.15
+
+# Price formula: selling_price from cost_inc
+# ~20% markup on cost incl. VAT matches existing Frozen pricing
+price_formula:
+  type: cost_markup
+  expression: "cost_inc * 1.20"
+
+# Margin floor: never let selling_price fall below this multiple of cost_inc
+# Protects against supplier price increases wiping out margin
+margin_floor_pct: 15.0   # alert + block if margin would drop below 15%

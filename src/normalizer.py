@@ -116,6 +116,13 @@ def normalize(
         for field in INT_FIELDS:
             mapped[field] = _to_int(mapped.get(field))
 
+        # 3b. Convert cost_ex_vat → cost_inc using supplier vat_rate
+        if mapped.get("cost_inc") is None and mapped.get("cost_ex_vat") is not None:
+            vat_rate = getattr(config, "vat_rate", 1.15)
+            cost_ex = _to_float(mapped.get("cost_ex_vat"))
+            if cost_ex:
+                mapped["cost_inc"] = round(cost_ex * vat_rate, 2)
+
         # 4. Map stock status
         raw_status = _str(mapped.get("stock_status"))
         mapped["stock_status"] = status_map.get(raw_status, raw_status or "Unknown")

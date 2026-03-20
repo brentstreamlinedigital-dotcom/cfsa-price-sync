@@ -99,6 +99,17 @@ def compute_diff(
             log.debug("[%s] Skipping %s — no price scraped", supplier, sku)
             continue
 
+        # Margin floor: if we have a cost price, ensure selling_price >= cost_inc * (1 + floor/100)
+        inc_cost = _safe_float(inc_row.get("cost_inc"))
+        if inc_cost and inc_cost > 0 and price_alert_threshold_pct:
+            min_selling = inc_cost * (1 + price_alert_threshold_pct / 100)
+            if inc_price < min_selling:
+                log.warning(
+                    "[%s] MARGIN ALERT %s: selling R%.2f < cost R%.2f + %.0f%% floor (min R%.2f) — blocked",
+                    supplier, sku, inc_price, inc_cost, price_alert_threshold_pct, min_selling,
+                )
+                continue  # Block this row entirely — don't write to sheet or Shopify
+
         if sku not in master_index:
             # Brand new product
             new_rows.append(inc_row.to_dict())
