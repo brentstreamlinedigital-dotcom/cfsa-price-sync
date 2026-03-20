@@ -228,6 +228,8 @@ class PlaywrightScraper(BaseScraper):
                 sku = ""
                 if sku_m:
                     sku = _re.sub('<[^>]+>', '', sku_m.group(1) or sku_m.group(2) or "").strip()
+                    # Strip label prefix e.g. "SKU: " or "SKU:"
+                    sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
 
                 # Price — prefer sale price (ins), fall back to regular price
                 price_m = _re.search(
