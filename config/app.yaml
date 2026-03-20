@@ -41,7 +41,7 @@ alerts:
   # Email alerts for large price changes
   enabled: true
   recipient: bm.automations1@gmail.com
-  price_change_threshold_pct: 15.0  # alert if price moves more than this %
+  price_change_threshold_pct: 5.0   # alert if price moves more than this %
 
 sync:
   # Max rows to write to Shopify per run (safety cap)
