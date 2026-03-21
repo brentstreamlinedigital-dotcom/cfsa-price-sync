@@ -192,6 +192,47 @@ class SheetsClient:
         "raw_row", "flagged_at", "resolved",
     ]
 
+    PRICE_CHANGES_HEADERS = [
+        "date", "supplier", "sku", "description",
+        "old_price", "new_price", "change_amt", "change_pct",
+        "old_stock_status", "new_stock_status", "alerted",
+    ]
+
+    def append_price_changes(self, rows: list[dict[str, Any]]) -> None:
+        """Log every price/stock change to the price_changes sheet for audit trail."""
+        if not rows:
+            return
+        ws = self._get_or_create_worksheet(
+            "price_changes", headers=self.PRICE_CHANGES_HEADERS
+        )
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        values = []
+        for r in rows:
+            old_p = r.get("old_price")
+            new_p = r.get("new_price")
+            try:
+                change_amt = round(float(new_p) - float(old_p), 2) if old_p and new_p else ""
+                change_pct = round((float(new_p) - float(old_p)) / float(old_p) * 100, 1) if old_p and float(old_p) != 0 and new_p else ""
+            except (TypeError, ValueError):
+                change_amt = ""
+                change_pct = ""
+            values.append([
+                now,
+                str(r.get("supplier", "")),
+                str(r.get("sku", "")),
+                str(r.get("description", "")),
+                str(old_p) if old_p is not None else "",
+                str(new_p) if new_p is not None else "",
+                str(change_amt),
+                f"{change_pct}%" if change_pct != "" else "",
+                str(r.get("old_stock_status", "")),
+                str(r.get("new_stock_status", "")),
+                "YES" if r.get("alerted") else "no",
+            ])
+        if values:
+            ws.append_rows(values, value_input_option="USER_ENTERED")
+            log.info("Logged %d price changes to price_changes sheet", len(values))
+
     NEW_PRODUCTS_HEADERS = [
         "date_found", "supplier", "sku", "description",
         "cost_inc", "selling_price", "stock_status", "stock_qty", "source",

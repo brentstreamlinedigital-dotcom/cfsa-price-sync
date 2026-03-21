@@ -207,9 +207,26 @@ def main(
                 if not no_variant.empty:
                     sheets.append_new_products(no_variant.to_dict("records"))
 
-            # Log price changes to Firestore
+            # Log price changes to Firestore + price_changes sheet
             if not diff.changed_rows.empty:
                 _log_price_changes(firebase_logger, key, diff.changed_rows, master_df)
+                # Build sheet records: join incoming rows with old master data
+                master_by_sku = master_df[master_df["supplier"] == key].set_index("sku") if not master_df.empty else pd.DataFrame()
+                change_records = []
+                for _, row in diff.changed_rows.iterrows():
+                    sku = str(row.get("sku", ""))
+                    old_row = master_by_sku.loc[sku] if sku in master_by_sku.index else None
+                    change_records.append({
+                        "supplier": key,
+                        "sku": sku,
+                        "description": row.get("description", ""),
+                        "old_price": old_row["selling_price"] if old_row is not None else None,
+                        "new_price": row.get("selling_price"),
+                        "old_stock_status": old_row["stock_status"] if old_row is not None else None,
+                        "new_stock_status": row.get("stock_status"),
+                        "alerted": row.get("_price_alerted", False),
+                    })
+                sheets.append_price_changes(change_records)
 
             # Sync to Shopify — skip rows that triggered price alerts
             if "_price_alerted" in to_write.columns:
