@@ -192,6 +192,52 @@ class SheetsClient:
         "raw_row", "flagged_at", "resolved",
     ]
 
+    NEW_PRODUCTS_HEADERS = [
+        "date_found", "supplier", "sku", "description",
+        "cost_inc", "selling_price", "stock_status", "stock_qty", "source",
+    ]
+
+    def append_new_products(self, rows: list[dict[str, Any]]) -> None:
+        """
+        Write new products (no shopify_variant_id) to the 'new_products' sheet
+        so they can be reviewed and potentially added to the Shopify store.
+        Skips rows already present (matched by supplier+sku).
+        """
+        if not rows:
+            return
+        ws = self._get_or_create_worksheet(
+            "new_products", headers=self.NEW_PRODUCTS_HEADERS
+        )
+        # Build set of existing supplier+sku combos to avoid duplicates
+        existing = ws.get_all_values()
+        existing_keys: set[str] = set()
+        if len(existing) > 1:  # first row is header
+            for r in existing[1:]:
+                if len(r) >= 3:
+                    existing_keys.add(f"{r[1]}|{r[2]}")  # supplier|sku
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        values = []
+        for r in rows:
+            key = f"{r.get('supplier','')}|{r.get('sku','')}"
+            if key in existing_keys:
+                continue
+            values.append([
+                now,
+                str(r.get("supplier", "")),
+                str(r.get("sku", "")),
+                str(r.get("description", "")),
+                str(r.get("cost_inc", "")),
+                str(r.get("selling_price", "")),
+                str(r.get("stock_status", "")),
+                str(r.get("stock_qty", "")),
+                str(r.get("source", "")),
+            ])
+
+        if values:
+            ws.append_rows(values, value_input_option="USER_ENTERED")
+            log.info("Added %d new products to new_products sheet", len(values))
+
     def append_error_flags(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
             return

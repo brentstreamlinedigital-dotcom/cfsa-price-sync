@@ -200,6 +200,13 @@ def main(
             )
             rows_written = sheets.upsert_rows(to_write, supplier=key)
 
+            # New rows with no Shopify variant ID → new_products sheet for review
+            if not diff.new_rows.empty:
+                vid = diff.new_rows.get("shopify_variant_id")
+                no_variant = diff.new_rows[vid.isna() | (vid == "")] if vid is not None else diff.new_rows
+                if not no_variant.empty:
+                    sheets.append_new_products(no_variant.to_dict("records"))
+
             # Log price changes to Firestore
             if not diff.changed_rows.empty:
                 _log_price_changes(firebase_logger, key, diff.changed_rows, master_df)
