@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -29,7 +30,7 @@ from .config_loader import SupplierConfig
 log = logging.getLogger(__name__)
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
-SUPPORTED_ATTACHMENT_EXTS = {"csv", "xlsx", "xls", "pdf"}
+SUPPORTED_ATTACHMENT_EXTS = {"csv", "xlsx", "xls", "xlsm", "pdf"}
 
 
 @dataclass
@@ -271,7 +272,22 @@ class GmailPoller:
         return new_label["id"]
 
     def _build_service(self, service_account_file: Optional[str]):
-        if service_account_file:
+        import os
+        refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN")
+        client_id = os.environ.get("GMAIL_CLIENT_ID")
+        client_secret = os.environ.get("GMAIL_CLIENT_SECRET")
+
+        if refresh_token and client_id and client_secret:
+            # OAuth2 with refresh token (works for personal Gmail)
+            creds = Credentials(
+                token=None,
+                refresh_token=refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=client_id,
+                client_secret=client_secret,
+                scopes=GMAIL_SCOPES,
+            )
+        elif service_account_file:
             creds = service_account.Credentials.from_service_account_file(
                 service_account_file,
                 scopes=GMAIL_SCOPES,
@@ -280,7 +296,6 @@ class GmailPoller:
         else:
             import google.auth
             creds, _ = google.auth.default(scopes=GMAIL_SCOPES)
-            # Delegate to the target mailbox
             creds = creds.with_subject(self.delegate_email)
 
         return build("gmail", "v1", credentials=creds, cache_discovery=False)

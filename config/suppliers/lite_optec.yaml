@@ -1,48 +1,51 @@
 supplier_key: lite_optec
 display_name: Lite Optec (Frozen / Coleman / Cosmoplast)
-enabled: true
-brands:
-  - Frozen
-  - Coleman
-  - Cosmoplast
+active: true
 
-# Lite Optec sends a daily XLSM email every morning
-email:
-  enabled: true
-  from_address: biancab@liteoptec.co.za
-  subject_contains: "SOH & Pricing"
-  attachment_ext: xlsm
+# Lite Optec sends a daily XLSM email with sheet "1A Warehouse 1 Stock"
+# Columns: Code, Description, Status (ACT=active), Items in stock, W/Sale Ex Vat
+source:
+  type: email
+  email_from_domains:
+    - liteoptec.co.za
+  email_subject_contains:
+    - "SOH & Pricing"
+  attachment_types:
+    - xlsm
 
-scraper:
+scrape_fallback:
   enabled: false
 
-parse:
-  type: xlsx
-  sheet_name: "1A Warehouse 1 Stock"
-  header_row: 1
-  column_map:
-    sku:          Code
-    description:  Description
-    stock_qty:    "Items in stock"
-    cost_ex_vat:  "W/Sale Ex Vat"
-  # Only import rows whose Code starts with these prefixes (Frozen, Coleman, Cosmoplast)
-  sku_prefix_filter:
-    - "FC"    # Frozen Coolers
-    - "CM"    # Coleman
-    - "CP"    # Cosmoplast
-    - "CG"    # Campingaz
-  status_col: Status
-  status_active_value: ACT
+column_map:
+  sku:          Code
+  description:  Description
+  stock_qty:    "Items in stock"
+  cost_ex_vat:  "W/Sale Ex Vat"
+
+sheet_name: "1A Warehouse 1 Stock"
+skip_rows: 0   # row 0 is the header — pandas reads it automatically
 
 # cost_inc = wholesale ex VAT × 1.15 (South African VAT)
-vat_rate: 1.15
+# vat_rate is applied by normalizer via getattr(config, "vat_rate", 1.15)
 
-# Price formula: selling_price from cost_inc
-# ~20% markup on cost incl. VAT matches existing Frozen pricing
+# Price formula: ~20% markup on cost incl. VAT
 price_formula:
-  type: cost_markup
+  key: cost_inc_x_1.20
   expression: "cost_inc * 1.20"
 
-# Margin floor: never let selling_price fall below this multiple of cost_inc
-# Protects against supplier price increases wiping out margin
-margin_floor_pct: 15.0   # alert + block if margin would drop below 15%
+stock_status_map:
+  "ACT": "In Stock"
+  "INA": "Out of Stock"
+  "DIS": "Discontinued"
+  "": "Unknown"
+
+sku_normalization:
+  uppercase: true
+  remove_spaces: false
+  strip_prefix: ""
+
+shopify:
+  sync_price: true
+  sync_inventory: true
+  location_id: "gid://shopify/Location/67975971075"
+  inventory_policy: deny

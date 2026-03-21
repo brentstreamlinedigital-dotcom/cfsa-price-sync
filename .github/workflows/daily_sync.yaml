@@ -48,6 +48,9 @@ jobs:
         env:
           GOOGLE_APPLICATION_CREDENTIALS: sa-key.json
           SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
           SUPPLIER_FILTER: ${{ inputs.supplier }}
           DRY_RUN: ${{ inputs.dry_run }}
           GCP_PROJECT: cfsa-price-sync

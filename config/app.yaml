@@ -20,7 +20,7 @@ google:
 
   gmail:
     # The mailbox to monitor for supplier emails
-    delegate_email: bm.automations1@gmail.com
+    delegate_email: brent.streamlinedigital@gmail.com
     processed_label: cfsa/processed
     pubsub_topic: projects/cfsa-price-sync/topics/cfsa-gmail-push
 
