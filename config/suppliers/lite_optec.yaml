@@ -44,6 +44,9 @@ sku_normalization:
   remove_spaces: false
   strip_prefix: ""
 
+# Only import Frozen (FC*), Coleman (CM*), Cosmoplast (CP*, CG*) products
+sku_prefix_filter: ["FC", "CM", "CP", "CG"]
+
 shopify:
   sync_price: true
   sync_inventory: true

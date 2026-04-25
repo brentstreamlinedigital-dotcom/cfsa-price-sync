@@ -65,6 +65,7 @@ class SupplierConfig(BaseModel):
     supplier_key: str
     display_name: str
     active: bool = True
+    sku_prefix_filter: Optional[list[str]] = None  # if set, only keep rows whose SKU starts with one of these
 
     source: EmailSource = Field(default_factory=EmailSource)
     scrape_fallback: ScrapeFallback = Field(default_factory=ScrapeFallback)

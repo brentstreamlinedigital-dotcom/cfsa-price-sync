@@ -420,7 +420,7 @@ def _send_alert_email(recipient: str, alerts: list[dict], run_id: str) -> None:
     try:
         import base64
         from email.mime.text import MIMEText
-        import google.auth
+        from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
 
         body_lines = [
@@ -428,11 +428,15 @@ def _send_alert_email(recipient: str, alerts: list[dict], run_id: str) -> None:
             f"{len(alerts)} price alert(s) require your review:\n",
         ]
         for a in alerts:
-            body_lines.append(
-                f"  [{a['supplier']}] {a['sku']}: "
-                f"R{a.get('old_price', '?'):.2f} → R{a.get('new_price', '?'):.2f} "
-                f"({a.get('price_delta_pct', '?'):+.1f}%)"
-            )
+            try:
+                line = (
+                    f"  [{a['supplier']}] {a['sku']}: "
+                    f"R{float(a.get('old_price') or 0):.2f} → R{float(a.get('new_price') or 0):.2f} "
+                    f"({a.get('price_delta_pct', 0):+.1f}%)"
+                )
+            except Exception:
+                line = f"  [{a.get('supplier')}] {a.get('sku')}"
+            body_lines.append(line)
         body_lines.append("\nCheck the 'error_flags' tab in the master sheet.")
 
         msg = MIMEText("\n".join(body_lines))
@@ -440,8 +444,22 @@ def _send_alert_email(recipient: str, alerts: list[dict], run_id: str) -> None:
         msg["subject"] = f"[CFSA] Price alerts from sync run {run_id}"
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
-        creds, _ = google.auth.default(
-            scopes=["https://www.googleapis.com/auth/gmail.send"]
+        # Use OAuth refresh token (same credentials as email poller)
+        refresh_token = os.getenv("GMAIL_REFRESH_TOKEN")
+        client_id = os.getenv("GMAIL_CLIENT_ID")
+        client_secret = os.getenv("GMAIL_CLIENT_SECRET")
+
+        if not (refresh_token and client_id and client_secret):
+            log.warning("Alert email not sent — GMAIL_REFRESH_TOKEN/CLIENT_ID/CLIENT_SECRET not set")
+            return
+
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=["https://www.googleapis.com/auth/gmail.send"],
         )
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         service.users().messages().send(

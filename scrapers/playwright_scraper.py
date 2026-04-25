@@ -231,16 +231,26 @@ class PlaywrightScraper(BaseScraper):
                     # Strip label prefix e.g. "SKU: " or "SKU:"
                     sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
 
-                # Price — prefer sale price (ins), fall back to regular price
-                price_m = _re.search(
-                    r'<ins[^>]*>.*?<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>|'
+                # Price — prefer main product price block (product-page-price),
+                # then sale price (ins), then first bdi on page.
+                # This avoids picking up sidebar/related product prices.
+                price = ""
+                main_block_m = _re.search(
+                    r'class="[^"]*product-page-price[^"]*"[^>]*>.*?'
                     r'<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>',
                     html, _re.DOTALL
                 )
-                price = ""
-                if price_m:
-                    raw = (price_m.group(1) or price_m.group(2) or "").strip()
-                    price = raw.replace(",", "")
+                if main_block_m:
+                    price = main_block_m.group(1).replace(",", "")
+                else:
+                    price_m = _re.search(
+                        r'<ins[^>]*>.*?<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>|'
+                        r'<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>',
+                        html, _re.DOTALL
+                    )
+                    if price_m:
+                        raw = (price_m.group(1) or price_m.group(2) or "").strip()
+                        price = raw.replace(",", "")
 
                 if title:
                     rows.append({

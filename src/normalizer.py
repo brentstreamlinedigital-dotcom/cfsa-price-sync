@@ -94,6 +94,13 @@ def normalize(
             skipped += 1
             continue
 
+        # 2a. SKU prefix filter — if set, skip rows whose SKU doesn't start with an allowed prefix
+        if config.sku_prefix_filter:
+            sku_upper = raw_sku.upper()
+            if not any(sku_upper.startswith(p.upper()) for p in config.sku_prefix_filter):
+                skipped += 1
+                continue
+
         sku = raw_sku
         if sku_norm.uppercase:
             sku = sku.upper()
