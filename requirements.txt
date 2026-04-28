@@ -29,3 +29,7 @@ google-cloud-secret-manager>=2.0
 # Dev / testing
 pytest>=7.0
 pytest-asyncio>=0.23
+
+# Dashboard
+streamlit>=1.35
+plotly>=5.20
