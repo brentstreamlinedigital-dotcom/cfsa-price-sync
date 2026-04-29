@@ -540,7 +540,7 @@ with t1:
         m3.metric("Held for Review",     alerted_ch, help="Price change >5% — awaiting manual approval")
 
         st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="slabel">History</div>', unsafe_allow_html=True)
+        st.markdown('<div class="slabel">Price change log</div>', unsafe_allow_html=True)
 
         # Filters
         fa, fb, fc, fd = st.columns([2,2,2,2])
@@ -574,34 +574,11 @@ with t1:
         filtered = pc[msk].copy()
 
         if filtered.empty:
-            st.caption("Nothing matches these filters.")
+            st.markdown(f"""
+            <div class="card" style="text-align:center;padding:24px;margin-top:8px">
+              <div style="color:{T3};font-size:.83rem">No changes match these filters</div>
+            </div>""", unsafe_allow_html=True)
         else:
-            # Stacked bar — two series, clean
-            chart = filtered.copy()
-            chart["day"] = chart["date"].dt.date
-            def is_alerted(v): return str(v).upper() == "YES"
-            daily = chart.groupby("day").apply(
-                lambda g: pd.Series({
-                    "auto":    (~g["alerted"].apply(is_alerted)).sum(),
-                    "alerted":  g["alerted"].apply(is_alerted).sum(),
-                })
-            ).reset_index()
-
-            fig = go.Figure()
-            fig.add_bar(x=daily["day"], y=daily["auto"],    name="Auto-applied",  marker_color=G,     opacity=.8)
-            fig.add_bar(x=daily["day"], y=daily["alerted"], name="Held for review", marker_color=AMBER, opacity=.75)
-            fig.update_layout(
-                barmode="stack", height=150,
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color=T3, family="Inter", size=11),
-                margin=dict(l=0,r=0,t=4,b=0), showlegend=True,
-                legend=dict(orientation="h", x=1, xanchor="right", y=1.15,
-                            bgcolor="rgba(0,0,0,0)", font_size=11),
-                xaxis=dict(showgrid=False, zeroline=False, linecolor=BDR),
-                yaxis=dict(gridcolor="rgba(255,255,255,.04)", zeroline=False),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
             # Table
             disp = filtered[["date","supplier","sku","description",
                               "old_price","new_price","change_amt","change_pct","alerted"]].copy()
