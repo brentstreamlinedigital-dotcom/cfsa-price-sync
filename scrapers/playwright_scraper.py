@@ -42,9 +42,11 @@ class PlaywrightScraper(BaseScraper):
         if not url:
             raise ValueError("scrape_fallback.url is required")
 
-        # shopify_json doesn't need a browser
+        # strategies that don't need a browser
         if strategy == "shopify_json":
             return self._fetch_shopify_json(url, scrape_cfg)
+        if strategy == "pmw_json":
+            return self._fetch_pmw_json(url, scrape_cfg)
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -74,6 +76,8 @@ class PlaywrightScraper(BaseScraper):
                     df = await self._extract_product_grid(page, url, scrape_cfg)
                 elif strategy == "product_pages":
                     df = self._fetch_product_pages(url, scrape_cfg)
+                elif strategy == "dometic_lp":
+                    df = await self._extract_dometic_lp(page, url, scrape_cfg)
                 else:
                     raise ValueError(f"Unknown scrape strategy: {strategy!r}")
 
@@ -85,6 +89,79 @@ class PlaywrightScraper(BaseScraper):
 
             finally:
                 await browser.close()
+
+    # ------------------------------------------------------------------
+    # PMW DataLayer JSON (WooCommerce — no browser needed)
+    # ------------------------------------------------------------------
+
+    def _fetch_pmw_json(self, brand_url: str, cfg: dict) -> pd.DataFrame:
+        """
+        Extract products from a WooCommerce brand/category page that embeds
+        Google Analytics pmwDataLayer.products[N] = {...} JavaScript objects.
+
+        Works on sites running the PixelYourSite / WooCommerce Google
+        Analytics plugin (e.g. thr-outdoor.co.za/brand/dometic/).
+
+        Returns a DataFrame with columns: sku, name, price
+        """
+        import json as _json
+        import re as _re
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            )
+        }
+
+        # Collect all category pages (supports ?paged=N WordPress pagination)
+        all_html: list[str] = []
+        page_num = 1
+        while page_num <= 20:
+            page_url = brand_url if page_num == 1 else f"{brand_url.rstrip('/')}?paged={page_num}"
+            try:
+                resp = requests.get(page_url, timeout=20, verify=False, headers=headers)
+                if resp.status_code == 404:
+                    break
+                all_html.append(resp.text)
+                # Stop if no pmwDataLayer entries on this page
+                if "pmwDataLayer.products[" not in resp.text:
+                    break
+            except Exception as e:
+                log.error("[%s] pmw_json fetch failed page %d: %s",
+                          self.config.get("supplier_key", "?"), page_num, e)
+                break
+
+            # If fewer than 24 entries, likely the last page
+            count = resp.text.count("pmwDataLayer.products[")
+            if count < 24:
+                break
+            page_num += 1
+
+        rows = []
+        seen_skus: set[str] = set()
+
+        for html in all_html:
+            # Use JSONDecoder.raw_decode to robustly parse each product object —
+            # avoids regex issues with nested braces inside dyn_r_ids etc.
+            for m in _re.finditer(r'pmwDataLayer\.products\[\d+\]\s*=\s*', html):
+                pos = m.end()
+                try:
+                    obj, _ = _json.JSONDecoder().raw_decode(html, pos)
+                    sku = str(obj.get("sku", "")).strip()
+                    name = str(obj.get("name", "")).strip()
+                    price = obj.get("price", "")
+                    if sku and sku not in seen_skus:
+                        seen_skus.add(sku)
+                        rows.append({"sku": sku, "name": name, "price": str(price)})
+                except (_json.JSONDecodeError, Exception):
+                    pass
+
+        df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=["sku", "name", "price"])
+        log.info("[%s] pmw_json: %d products from %s",
+                 self.config.get("supplier_key", "?"), len(df), brand_url)
+        return df
 
     # ------------------------------------------------------------------
     # Shopify JSON (no browser)
@@ -267,6 +344,123 @@ class PlaywrightScraper(BaseScraper):
         log.info("[%s] product_pages: %d products scraped",
                  self.config.get("supplier_key", "?"), len(df))
         return df
+
+    # ------------------------------------------------------------------
+    # Dometic landing-page extractor (Next.js / React — Playwright needed)
+    # ------------------------------------------------------------------
+
+    async def _extract_dometic_lp(self, page: Page, url: str, cfg: dict) -> pd.DataFrame:
+        """
+        Extract products from a Dometic.com landing page (Next.js SSR).
+
+        Strategy (in order of preference):
+        1. JSON-LD <script type="application/ld+json"> Product schemas
+        2. __NEXT_DATA__ embedded JSON parsed for product + price nodes
+        3. Rendered DOM product cards (class-name heuristics)
+
+        Returns DataFrame with columns: sku, name, price
+        """
+        import json as _json
+        import re as _re
+
+        await page.wait_for_load_state("networkidle", timeout=45_000)
+        rows: list[dict] = []
+
+        # ── 1. JSON-LD ──────────────────────────────────────────────────
+        ld_texts: list[str] = await page.evaluate(
+            "() => Array.from(document.querySelectorAll('script[type=\"application/ld+json\"]'))"
+            ".map(s => s.textContent || '')"
+        )
+        for text in ld_texts:
+            try:
+                data = _json.loads(text)
+                items = data.get("@graph", [data]) if isinstance(data, dict) else (data if isinstance(data, list) else [data])
+                for item in items:
+                    if item.get("@type") == "Product":
+                        name   = item.get("name", "")
+                        sku    = item.get("sku") or item.get("mpn") or ""
+                        offers = item.get("offers", {})
+                        if isinstance(offers, list):
+                            offers = offers[0] if offers else {}
+                        price = str(offers.get("price") or offers.get("lowPrice") or "")
+                        if name and price:
+                            rows.append({"sku": str(sku).strip(), "name": name.strip(), "price": price.replace(",", "")})
+            except Exception:
+                pass
+
+        if rows:
+            log.info("[%s] dometic_lp: found %d products via JSON-LD", self.config.get("supplier_key", "?"), len(rows))
+            return pd.DataFrame(rows)
+
+        # ── 2. __NEXT_DATA__ ────────────────────────────────────────────
+        next_json: str = await page.evaluate(
+            "() => { const el = document.getElementById('__NEXT_DATA__'); return el ? el.textContent : ''; }"
+        )
+        if next_json:
+            try:
+                ndata = _json.loads(next_json)
+                text  = _json.dumps(ndata)
+                # Walk the JSON tree looking for {"sku": "...", "price": ...} objects
+                for m in _re.finditer(r'"sku"\s*:\s*"([^"]+)"', text):
+                    pos = m.start()
+                    chunk = text[max(0, pos - 200): pos + 500]
+                    name_m  = _re.search(r'"(?:name|title)"\s*:\s*"([^"]+)"', chunk)
+                    price_m = _re.search(r'"price"\s*:\s*\{[^}]*"value"\s*:\s*([0-9.]+)', chunk) or \
+                              _re.search(r'"price"\s*:\s*([0-9.]+)', chunk)
+                    if name_m and price_m:
+                        rows.append({
+                            "sku":   m.group(1).strip(),
+                            "name":  name_m.group(1).strip(),
+                            "price": price_m.group(1),
+                        })
+            except Exception:
+                pass
+
+        if rows:
+            # Deduplicate by sku
+            seen: set[str] = set()
+            rows = [r for r in rows if not (r["sku"] in seen or seen.add(r["sku"]))]  # type: ignore[func-returns-value]
+            log.info("[%s] dometic_lp: found %d products via __NEXT_DATA__", self.config.get("supplier_key", "?"), len(rows))
+            return pd.DataFrame(rows)
+
+        # ── 3. DOM heuristics ────────────────────────────────────────────
+        dom_rows: list[dict] = await page.evaluate(
+            """
+            () => {
+                const results = [];
+                // Dometic uses data-testid, data-product-code, or specific class patterns
+                const candidates = document.querySelectorAll(
+                    '[data-product-code], [data-sku], ' +
+                    '[class*="ProductTile"], [class*="product-tile"], ' +
+                    '[class*="ProductCard"], [class*="product-card"]'
+                );
+                candidates.forEach(el => {
+                    const nameEl  = el.querySelector('h2, h3, h4, [class*="title" i], [class*="name" i]');
+                    const priceEl = el.querySelector('[class*="price" i], [data-price]');
+                    const sku     = el.getAttribute('data-product-code') || el.getAttribute('data-sku') || '';
+                    const name    = nameEl ? nameEl.innerText.trim() : '';
+                    const rawP    = priceEl ? priceEl.innerText.replace(/[^0-9., ]/g, '').trim() : '';
+                    const price   = rawP.replace(/,/g, '').split(' ')[0];
+                    if (name && price) results.push({ sku, name, price });
+                });
+                return results;
+            }
+            """
+        )
+        for item in dom_rows:
+            rows.append({
+                "sku":   item.get("sku", "").strip(),
+                "name":  item.get("name", "").strip(),
+                "price": item.get("price", "").strip(),
+            })
+
+        if not rows:
+            log.warning("[%s] dometic_lp: no products found on %s — page may require login or block bots",
+                        self.config.get("supplier_key", "?"), url)
+
+        log.info("[%s] dometic_lp: %d products via DOM on %s",
+                 self.config.get("supplier_key", "?"), len(rows), url)
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["sku", "name", "price"])
 
     # ------------------------------------------------------------------
     # Login

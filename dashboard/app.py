@@ -51,7 +51,7 @@ SUPPLIER_LABELS = {
     "tsunami":             "Tsunami Coolers",
     "frozen":              "Frozen",
 }
-ACTIVE_SUPPLIERS = {"flex", "engel", "snomaster", "lite_optec"}
+ACTIVE_SUPPLIERS = {"flex", "engel", "snomaster", "lite_optec", "dag", "dometic_thrsa", "dometic_frontrunner"}
 
 st.set_page_config(
     page_title="CFSA Price Sync",

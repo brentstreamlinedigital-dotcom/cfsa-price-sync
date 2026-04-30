@@ -1,7 +1,10 @@
 supplier_key: dag
 display_name: D.A.G
-active: false
+active: true
 
+# D.A.G sells via their Shopify store: 4x4wholesalersafrica.com
+# The vehicle-fridges collection contains all fridge products (~20 items).
+# Shopify products.json gives SKU, title, price (inc VAT), and stock status.
 source:
   type: email
   email_from_domains:
@@ -16,35 +19,34 @@ source:
     - csv
 
 scrape_fallback:
-  enabled: false
-  days_threshold: 14
-  url: https://dag.co.za/dealer-prices
-  strategy: table
+  enabled: true
+  days_threshold: 0        # always scrape — no email feed
+  url: https://4x4wholesalersafrica.com/collections/vehicle-fridges
+  strategy: shopify_json   # uses Shopify products.json endpoint
 
-# Actual column headers from DAG sheet:
-# SKU | Description | Cost Incl | RRP | CFSA | Delivery Charged | Delivery cost | Profit
+# Columns returned by shopify_json: sku, description, price,
+#   compare_at_price, available (bool), inventory_quantity, variant_title
+# Shopify ZA prices are already inc. VAT.
 column_map:
-  sku: SKU
-  description: Description
-  cost_inc: Cost Incl
-  rrp: RRP
-  delivery_charged: Delivery Charged
-  delivery_cost: Delivery cost
+  sku:          sku
+  description:  description
+  rrp:          price
+  stock_status: available
+  stock_qty:    inventory_quantity
 
 sheet_name: null
 skip_rows: 0
 
 price_formula:
-  key: rrp_x_0.986
-  expression: "rrp * 0.986"   # CFSA ≈ RRP × 0.986 (e.g. 6899/6999)
+  key: rrp_x_1.0
+  expression: "rrp * 1.0"   # sell at the same public price as 4x4 Wholesalers
 
 stock_status_map:
-  "In Stock": "In Stock"
-  "Available": "In Stock"
-  "Out of Stock": "Out of Stock"
-  "Sold Out": "Out of Stock"
-  "Discontinued": "Discontinued"
-  "": "Unknown"
+  "True":  "In Stock"
+  "False": "Out of Stock"
+  "true":  "In Stock"
+  "false": "Out of Stock"
+  "":      "Unknown"
 
 sku_normalization:
   uppercase: true

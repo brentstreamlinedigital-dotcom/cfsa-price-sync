@@ -1,12 +1,17 @@
 supplier_key: dometic_thrsa
-display_name: Dometic (THRSA)
-active: false
+display_name: Dometic (THR Outdoor)
+active: true
 
+# Primary source: daily scrape of the THR Outdoor Dometic brand page.
+# The WooCommerce page embeds pmwDataLayer.products[N] = {...} JS objects
+# containing SKU, product name, and retail price for ALL Dometic products.
+# No email feed is expected from this supplier.
 source:
   type: email
   email_from_domains:
-    - dometic.com
+    - thr-outdoor.co.za
     - thrsa.co.za
+    - dometic.com
   email_subject_contains:
     - pricelist
     - price list
@@ -14,48 +19,44 @@ source:
   attachment_types:
     - xlsx
     - csv
-    - pdf
 
 scrape_fallback:
-  enabled: false
-  days_threshold: 14
-  url: https://dometic.com/za/dealer
-  strategy: table
+  enabled: true
+  days_threshold: 0        # always scrape — no email feed
+  url: https://thr-outdoor.co.za/brand/dometic/
+  strategy: pmw_json       # extracts pmwDataLayer.products JS from the brand page
 
-# Actual column headers from Dometic THRSA sheet:
-# SKU | Description | Cost Inc | CFSA | Delivery Charge | Delivery | Profit | Margin
-# Note: NO separate RRP column — CFSA is the reference price.
-# Cost Inc (8970) × 1.281 ≈ CFSA (11499); use cost_inc to calculate.
+# Columns returned by pmw_json: sku, name, price
+# "price" is the THR website retail price (already inc. 15% VAT)
 column_map:
-  sku: SKU
-  description: Description
-  cost_inc: Cost Inc
-  rrp: CFSA          # CFSA is used as both rrp and selling_price reference here
-  delivery_charged: Delivery Charge
-  delivery_cost: Delivery
+  sku:         sku
+  description: name
+  rrp:         price
 
 sheet_name: null
 skip_rows: 0
 
+# THR website prices are the public RRP — track CFSA at same price.
+# Adjust per-product in Shopify if a different margin is needed.
 price_formula:
-  key: cost_x_1.28
-  expression: "cost_inc * 1.28"   # CFSA ≈ Cost Inc × 1.28 (e.g. 8970 × 1.28 ≈ 11482 ≈ 11499)
+  key: rrp_x_1.0
+  expression: "rrp * 1.0"
 
 stock_status_map:
-  "In Stock": "In Stock"
-  "Available": "In Stock"
-  "Out of Stock": "Out of Stock"
-  "Sold Out": "Out of Stock"
-  "Discontinued": "Discontinued"
-  "": "Unknown"
+  "In Stock":      "In Stock"
+  "Available":     "In Stock"
+  "Out of Stock":  "Out of Stock"
+  "Sold Out":      "Out of Stock"
+  "Discontinued":  "Discontinued"
+  "":              "Unknown"
 
 sku_normalization:
-  uppercase: false   # numeric SKUs — preserve as-is
-  remove_spaces: true
+  uppercase: true
+  remove_spaces: false
   strip_prefix: ""
 
 shopify:
   sync_price: true
-  sync_inventory: true
+  sync_inventory: false    # THR prices only — no stock data from this source
   location_id: "gid://shopify/Location/67975971075"
   inventory_policy: deny

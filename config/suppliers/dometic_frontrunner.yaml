@@ -1,7 +1,12 @@
 supplier_key: dometic_frontrunner
 display_name: Dometic (Front Runner)
-active: false
+active: true
 
+# Front Runner Outfitters was acquired by Dometic.
+# frontrunneroutfitters.com now redirects to dometic.com.
+# This scraper targets the dedicated Front Runner × Dometic landing page
+# using a Playwright-based strategy that renders the Next.js page and
+# extracts product data from JSON-LD schemas or the rendered DOM.
 source:
   type: email
   email_from_domains:
@@ -18,35 +23,32 @@ source:
     - pdf
 
 scrape_fallback:
-  enabled: false
-  days_threshold: 14
-  url: https://frontrunneroutfitters.com/za/dealer
-  strategy: table
+  enabled: true
+  days_threshold: 0        # always scrape — no email feed
+  url: https://www.dometic.com/en-za/lp/front-runner-dometic
+  strategy: dometic_lp     # Playwright renderer with JSON-LD / DOM extraction
 
-# Actual column headers from Dometic Frontrunner sheet:
-# SKU | Description | Cost Incl | RRP | CFSA | Delivery Charged | Delivery cost | Profit
+# Columns returned by dometic_lp: sku, name, price
+# Dometic.com prices are displayed inc. VAT for ZA customers.
 column_map:
-  sku: SKU
-  description: Description
-  cost_inc: Cost Incl
-  rrp: RRP
-  delivery_charged: Delivery Charged
-  delivery_cost: Delivery cost
+  sku:         sku
+  description: name
+  rrp:         price
 
 sheet_name: null
 skip_rows: 0
 
 price_formula:
-  key: rrp_x_0.999
-  expression: "rrp * 0.999"   # CFSA ≈ RRP (e.g. 10369/10375 ≈ 0.999); effectively same price
+  key: rrp_x_1.0
+  expression: "rrp * 1.0"   # track at Dometic.com RRP
 
 stock_status_map:
-  "In Stock": "In Stock"
-  "Available": "In Stock"
+  "In Stock":     "In Stock"
+  "Available":    "In Stock"
   "Out of Stock": "Out of Stock"
-  "Sold Out": "Out of Stock"
+  "Sold Out":     "Out of Stock"
   "Discontinued": "Discontinued"
-  "": "Unknown"
+  "":             "Unknown"
 
 sku_normalization:
   uppercase: true
@@ -55,6 +57,6 @@ sku_normalization:
 
 shopify:
   sync_price: true
-  sync_inventory: true
+  sync_inventory: false    # dometic.com doesn't expose stock counts
   location_id: "gid://shopify/Location/67975971075"
   inventory_policy: deny
