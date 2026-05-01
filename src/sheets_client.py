@@ -279,6 +279,58 @@ class SheetsClient:
             ws.append_rows(values, value_input_option="USER_ENTERED")
             log.info("Added %d new products to new_products sheet", len(values))
 
+    def purge_stale_rows(self, supplier: str, keep_skus: set[str]) -> int:
+        """
+        Remove master sheet rows for *supplier* whose SKU is no longer in
+        the current scrape results (i.e. products that have been filtered
+        out or discontinued).
+
+        Called after upsert_rows for scrape-only suppliers so the master
+        sheet stays in sync with the live scrape rather than accumulating
+        stale / filtered-out accessories.
+
+        Args:
+            supplier:  Supplier key to clean up.
+            keep_skus: Set of SKUs that should be KEPT (from current scrape).
+
+        Returns:
+            Number of rows deleted.
+        """
+        if not keep_skus:
+            log.warning("[%s] purge_stale_rows called with empty keep_skus — skipping (safety guard)", supplier)
+            return 0
+
+        ws = self._get_or_create_worksheet("master", headers=MASTER_FIELDS)
+        all_values = ws.get_all_values()
+        if len(all_values) <= 1:
+            return 0
+
+        header = all_values[0]
+        try:
+            sku_col = header.index("sku")
+            supplier_col = header.index("supplier")
+        except ValueError:
+            return 0
+
+        # Collect 1-based row numbers that should be deleted (in order)
+        rows_to_delete: list[int] = []
+        for i, row in enumerate(all_values[1:], start=2):
+            row_supplier = row[supplier_col] if len(row) > supplier_col else ""
+            row_sku = row[sku_col] if len(row) > sku_col else ""
+            if row_supplier == supplier and row_sku and row_sku not in keep_skus:
+                rows_to_delete.append(i)
+
+        if not rows_to_delete:
+            return 0
+
+        log.info("[%s] Purging %d stale rows from master sheet", supplier, len(rows_to_delete))
+
+        # Delete rows in REVERSE order so earlier row numbers stay valid
+        for row_num in sorted(rows_to_delete, reverse=True):
+            ws.delete_rows(row_num)
+
+        return len(rows_to_delete)
+
     def append_error_flags(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
             return

@@ -200,6 +200,29 @@ def main(
             )
             rows_written = sheets.upsert_rows(to_write, supplier=key)
 
+        # ── Purge stale rows after any scrape run ────────────────────────
+        # When data comes from a live scrape (not an email attachment), the
+        # scrape represents the supplier's full current catalog. Any master
+        # row NOT in the current scrape is stale (filtered-out accessory,
+        # discontinued product, or erroneously inserted) and should be
+        # removed so the sheet stays in sync with the live data.
+        # Safety guard: only purge if we got at least 1 row from the scrape.
+        data_source = (
+            incoming_df["source"].iloc[0]
+            if not incoming_df.empty and "source" in incoming_df.columns
+            else "email"
+        )
+        should_purge = (
+            data_source == "scrape"
+            and cfg.scrape_fallback.enabled
+            and not incoming_df.empty
+        )
+        if should_purge and not dry_run:
+            current_skus = set(incoming_df["sku"].dropna().astype(str).tolist())
+            purged = sheets.purge_stale_rows(supplier=key, keep_skus=current_skus)
+            if purged:
+                log.info("[%s] Purged %d stale rows (accessories/discontinued no longer in scrape)", key, purged)
+
             # New rows with no Shopify variant ID → new_products sheet for review
             if not diff.new_rows.empty:
                 vid = diff.new_rows.get("shopify_variant_id")

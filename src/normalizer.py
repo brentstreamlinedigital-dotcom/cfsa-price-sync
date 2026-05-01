@@ -73,7 +73,8 @@ def normalize(
     formula = config.price_formula
 
     out_rows: list[dict[str, Any]] = []
-    skipped = 0
+    skipped_no_sku = 0
+    skipped_filter = 0
 
     for _, row in df.iterrows():
         mapped: dict[str, Any] = {}
@@ -91,14 +92,14 @@ def normalize(
         # 2. Normalize SKU
         raw_sku = _str(mapped.get("sku"))
         if not raw_sku:
-            skipped += 1
+            skipped_no_sku += 1
             continue
 
         # 2a. SKU prefix filter — if set, skip rows whose SKU doesn't start with an allowed prefix
         if config.sku_prefix_filter:
             sku_upper = raw_sku.upper()
             if not any(sku_upper.startswith(p.upper()) for p in config.sku_prefix_filter):
-                skipped += 1
+                skipped_filter += 1
                 continue
 
         # 2b. Description keyword filter
@@ -106,10 +107,10 @@ def normalize(
             desc_lower = _str(mapped.get("description")).lower()
             df_cfg = config.description_filter
             if df_cfg.include and not any(kw.lower() in desc_lower for kw in df_cfg.include):
-                skipped += 1
+                skipped_filter += 1
                 continue
             if df_cfg.exclude and any(kw.lower() in desc_lower for kw in df_cfg.exclude):
-                skipped += 1
+                skipped_filter += 1
                 continue
 
         sku = raw_sku
@@ -164,8 +165,10 @@ def normalize(
 
         out_rows.append({f: mapped.get(f) for f in MASTER_FIELDS})
 
-    if skipped:
-        log.warning("[%s] Skipped %d rows with no SKU", config.supplier_key, skipped)
+    if skipped_no_sku:
+        log.warning("[%s] Skipped %d rows with no SKU", config.supplier_key, skipped_no_sku)
+    if skipped_filter:
+        log.info("[%s] Filtered out %d non-fridge rows (description/SKU prefix filter)", config.supplier_key, skipped_filter)
 
     if not out_rows:
         return pd.DataFrame(columns=MASTER_FIELDS)

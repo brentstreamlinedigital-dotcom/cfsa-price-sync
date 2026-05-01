@@ -336,7 +336,7 @@ class PlaywrightScraper(BaseScraper):
                 if brand_filter and brand_filter.lower() not in title.lower():
                     continue
 
-                # ── SKU — JSON-LD → <span class="sku"> → URL slug ─────────────────
+                # ── SKU — JSON-LD → <span class="sku"> → model-code in title → URL slug ─
                 sku = ld_sku
                 # Strip "SKU: " label prefix that some themes put in the ld+json value
                 sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
@@ -348,8 +348,15 @@ class PlaywrightScraper(BaseScraper):
                     if sku_m:
                         sku = _re.sub('<[^>]+>', '', sku_m.group(1)).strip()
                         sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
+                if not sku and title:
+                    # Extract model code from title — look for patterns like
+                    # "SMLS-100D", "SMDZ-LS25", "CFX3-45", "MR40F-G4NS" etc.
+                    # Pattern: 2-6 uppercase letters, hyphen, 2-8 alphanumeric chars
+                    code_m = _re.search(r'\b([A-Z]{2,6}-[A-Z0-9]{2,10})\b', title)
+                    if code_m:
+                        sku = code_m.group(1).upper()
                 if not sku:
-                    # Last resort: derive from URL slug
+                    # Last resort: derive from URL slug (often descriptive, not a real SKU)
                     slug_m = _re.search(r'/product/([^/?#]+)/?', product_url)
                     if slug_m:
                         sku = slug_m.group(1).upper()
