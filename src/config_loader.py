@@ -57,6 +57,20 @@ class ShopifyConfig(BaseModel):
     inventory_policy: str = "deny"  # deny | continue
 
 
+class DescriptionFilter(BaseModel):
+    """
+    Keyword-based filter on the normalised description field.
+    Applied after column mapping, before price calculation.
+
+    include: keep row only if description contains AT LEAST ONE of these (case-insensitive)
+             — leave empty to skip this check.
+    exclude: drop row if description contains ANY of these (case-insensitive)
+             — leave empty to skip this check.
+    """
+    include: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Root supplier config model
 # ---------------------------------------------------------------------------
@@ -66,6 +80,7 @@ class SupplierConfig(BaseModel):
     display_name: str
     active: bool = True
     sku_prefix_filter: Optional[list[str]] = None  # if set, only keep rows whose SKU starts with one of these
+    description_filter: Optional[DescriptionFilter] = None  # keyword filter on description
 
     source: EmailSource = Field(default_factory=EmailSource)
     scrape_fallback: ScrapeFallback = Field(default_factory=ScrapeFallback)

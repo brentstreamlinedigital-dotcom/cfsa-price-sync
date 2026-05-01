@@ -37,6 +37,25 @@ column_map:
 sheet_name: null
 skip_rows: 0
 
+# Only keep actual fridge/freezer units — drop all accessories.
+# DAG's accessories all contain "fridge" in their name, so we use exclude
+# keywords to strip out brackets, covers, tracks, cables, warranties, etc.
+description_filter:
+  include:
+    - "fridge"
+    - "freezer"
+    - "cooler"
+  exclude:
+    - "bracket"
+    - "track"
+    - "cover"
+    - "tie down"
+    - "warranty"
+    - "cable"
+    - "power supply"
+    - "battery"
+    - "bag"
+
 price_formula:
   key: rrp_x_1.0
   expression: "rrp * 1.0"   # sell at the same public price as 4x4 Wholesalers

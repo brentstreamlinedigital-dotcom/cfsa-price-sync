@@ -38,6 +38,14 @@ column_map:
 sheet_name: null
 skip_rows: 0
 
+# Only keep camping fridge/freezer/cooler products from the landing page.
+description_filter:
+  include:
+    - "fridge"
+    - "freezer"
+    - "cooler"
+    - "cooling"
+
 price_formula:
   key: rrp_x_1.0
   expression: "rrp * 1.0"   # track at Dometic.com RRP

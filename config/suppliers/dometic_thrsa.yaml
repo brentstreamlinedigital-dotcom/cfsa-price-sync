@@ -36,6 +36,17 @@ column_map:
 sheet_name: null
 skip_rows: 0
 
+# THR stocks 92+ Dometic products across many categories (toilets, awnings,
+# taps, air con, etc.). Only keep actual fridge/freezer units.
+# CFX/CFF/CDF bags don't say "fridge" or "freezer" so the include list
+# naturally drops them without needing explicit exclusions.
+description_filter:
+  include:
+    - "fridge"
+    - "freezer"
+    - "cooler"
+    - "cooling"
+
 # THR website prices are the public RRP — track CFSA at same price.
 # Adjust per-product in Shopify if a different margin is needed.
 price_formula:

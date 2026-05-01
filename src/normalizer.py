@@ -101,6 +101,17 @@ def normalize(
                 skipped += 1
                 continue
 
+        # 2b. Description keyword filter
+        if config.description_filter:
+            desc_lower = _str(mapped.get("description")).lower()
+            df_cfg = config.description_filter
+            if df_cfg.include and not any(kw.lower() in desc_lower for kw in df_cfg.include):
+                skipped += 1
+                continue
+            if df_cfg.exclude and any(kw.lower() in desc_lower for kw in df_cfg.exclude):
+                skipped += 1
+                continue
+
         sku = raw_sku
         if sku_norm.uppercase:
             sku = sku.upper()
