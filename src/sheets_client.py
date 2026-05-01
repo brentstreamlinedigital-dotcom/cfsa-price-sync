@@ -325,9 +325,24 @@ class SheetsClient:
 
         log.info("[%s] Purging %d stale rows from master sheet", supplier, len(rows_to_delete))
 
-        # Delete rows in REVERSE order so earlier row numbers stay valid
-        for row_num in sorted(rows_to_delete, reverse=True):
-            ws.delete_rows(row_num)
+        # Send all deletions in a single batch_update request (avoids the
+        # 60 writes/min quota that would be hit by calling delete_rows()
+        # individually for large purges).  Rows must still be in reverse
+        # order so each deletion doesn't invalidate subsequent indices.
+        batch_requests = [
+            {
+                "deleteDimension": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "dimension": "ROWS",
+                        "startIndex": row_num - 1,  # 0-indexed, inclusive
+                        "endIndex": row_num,         # exclusive
+                    }
+                }
+            }
+            for row_num in sorted(rows_to_delete, reverse=True)
+        ]
+        ws.spreadsheet.batch_update({"requests": batch_requests})
 
         return len(rows_to_delete)
 
