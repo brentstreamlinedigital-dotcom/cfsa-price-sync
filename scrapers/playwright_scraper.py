@@ -66,7 +66,10 @@ class PlaywrightScraper(BaseScraper):
                 if auth:
                     await self._login(page, auth)
 
-                await page.goto(url, wait_until="networkidle", timeout=30_000)
+                # dometic_lp never reaches networkidle (background fetches);
+                # wait for domcontentloaded then let the strategy handle the rest.
+                wait_event = "domcontentloaded" if strategy == "dometic_lp" else "networkidle"
+                await page.goto(url, wait_until=wait_event, timeout=30_000)
 
                 if strategy == "table":
                     df = await self._extract_table(page)
@@ -287,54 +290,96 @@ class PlaywrightScraper(BaseScraper):
                 resp = requests.get(product_url, timeout=20, verify=False, headers=headers)
                 html = resp.text
 
-                # Title / description
-                title_m = _re.search(
-                    r'<h1[^>]*class="[^"]*(?:product_title|entry-title)[^"]*"[^>]*>(.*?)</h1>',
+                # ── Primary: JSON-LD Product schema (most reliable across WC themes) ──
+                ld_name = ld_sku = ld_price = ld_stock = ""
+                for ld_m in _re.finditer(
+                    r'<script[^>]+type="application/ld\+json"[^>]*>(.*?)</script>',
                     html, _re.DOTALL
-                )
-                title = _re.sub('<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+                ):
+                    try:
+                        import json as _json
+                        ld_data = _json.loads(ld_m.group(1))
+                        items = (ld_data.get("@graph", [ld_data]) if isinstance(ld_data, dict)
+                                 else (ld_data if isinstance(ld_data, list) else [ld_data]))
+                        for item in items:
+                            if item.get("@type") == "Product":
+                                ld_name = item.get("name", "")
+                                ld_sku  = str(item.get("sku", "") or item.get("mpn", "")).strip()
+                                offers  = item.get("offers", {})
+                                if isinstance(offers, list):
+                                    offers = offers[0] if offers else {}
+                                ld_price = str(offers.get("price", "")).replace(",", "")
+                                avail    = str(offers.get("availability", ""))
+                                ld_stock = ("In Stock" if "InStock" in avail
+                                            else "Out of Stock" if "OutOfStock" in avail
+                                            else "Unknown")
+                                break
+                    except Exception:
+                        pass
+                    if ld_name:
+                        break
 
+                # Clean up supplier-name suffixes from JSON-LD names (e.g. "SMDZ-TR42S - SnoMaster")
+                if ld_name:
+                    ld_name = _re.sub(r'\s*-\s*SnoMaster\s*$', '', ld_name, flags=_re.IGNORECASE).strip()
+
+                # ── Fallback: regex title from h1 ──────────────────────────────────
+                title = ld_name
+                if not title:
+                    title_m = _re.search(
+                        r'<h1[^>]*class="[^"]*(?:product_title|entry-title|elementor-heading)[^"]*"[^>]*>(.*?)</h1>',
+                        html, _re.DOTALL
+                    )
+                    title = _re.sub('<[^>]+>', '', title_m.group(1)).strip() if title_m else ""
+
+                # Brand filter — applied to resolved title
                 if brand_filter and brand_filter.lower() not in title.lower():
                     continue
 
-                # SKU
-                sku_m = _re.search(
-                    r'<span class="sku"[^>]*>(.*?)</span>|"sku"\s*:\s*"([^"]+)"',
-                    html, _re.DOTALL
-                )
-                sku = ""
-                if sku_m:
-                    sku = _re.sub('<[^>]+>', '', sku_m.group(1) or sku_m.group(2) or "").strip()
-                    # Strip label prefix e.g. "SKU: " or "SKU:"
-                    sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
+                # ── SKU — JSON-LD → <span class="sku"> → URL slug ─────────────────
+                sku = ld_sku
+                # Strip "SKU: " label prefix that some themes put in the ld+json value
+                sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
+                if not sku:
+                    sku_m = _re.search(
+                        r'<span class="sku"[^>]*>(.*?)</span>',
+                        html, _re.DOTALL
+                    )
+                    if sku_m:
+                        sku = _re.sub('<[^>]+>', '', sku_m.group(1)).strip()
+                        sku = _re.sub(r'^[Ss][Kk][Uu]\s*:\s*', '', sku).strip()
+                if not sku:
+                    # Last resort: derive from URL slug
+                    slug_m = _re.search(r'/product/([^/?#]+)/?', product_url)
+                    if slug_m:
+                        sku = slug_m.group(1).upper()
 
-                # Price — prefer main product price block (product-page-price),
-                # then sale price (ins), then first bdi on page.
-                # This avoids picking up sidebar/related product prices.
-                price = ""
-                main_block_m = _re.search(
-                    r'class="[^"]*product-page-price[^"]*"[^>]*>.*?'
-                    r'<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>',
-                    html, _re.DOTALL
-                )
-                if main_block_m:
-                    price = main_block_m.group(1).replace(",", "")
-                else:
+                # ── Price — JSON-LD → product-page-price CSS class → first bdi ──
+                price = ld_price
+                if not price:
+                    main_m = _re.search(
+                        r'class="[^"]*product-page-price[^"]*"[^>]*>.*?'
+                        r'<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>',
+                        html, _re.DOTALL
+                    )
+                    if main_m:
+                        price = main_m.group(1).replace(",", "")
+                if not price:
                     price_m = _re.search(
                         r'<ins[^>]*>.*?<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>|'
                         r'<bdi>\s*<span[^>]*>[^<]*</span>\s*([0-9,]+(?:\.[0-9]+)?)\s*</bdi>',
                         html, _re.DOTALL
                     )
                     if price_m:
-                        raw = (price_m.group(1) or price_m.group(2) or "").strip()
-                        price = raw.replace(",", "")
+                        price = (price_m.group(1) or price_m.group(2) or "").strip().replace(",", "")
 
                 if title:
                     rows.append({
-                        "sku": sku,
-                        "description": title,
-                        "price": price,
-                        "url": product_url,
+                        "sku":          sku,
+                        "description":  title,
+                        "price":        price,
+                        "stock_status": ld_stock or "",
+                        "url":          product_url,
                     })
             except Exception as e:
                 log.warning("[%s] product_pages: failed to fetch %s: %s",
@@ -363,10 +408,61 @@ class PlaywrightScraper(BaseScraper):
         import json as _json
         import re as _re
 
-        await page.wait_for_load_state("networkidle", timeout=45_000)
+        # Use domcontentloaded + explicit wait — dometic.com App Router never reaches networkidle
+        # via Playwright because it has persistent background fetches.
+        try:
+            await page.wait_for_selector('[data-slot="product-card-link"]', timeout=20_000)
+        except Exception:
+            log.warning("[%s] dometic_lp: timed out waiting for product cards on %s",
+                        self.config.get("supplier_key", "?"), url)
+
         rows: list[dict] = []
 
-        # ── 1. JSON-LD ──────────────────────────────────────────────────
+        # ── Primary: [data-slot="product-card-link"] cards ─────────────
+        # Dometic.com (Next.js App Router) renders product cards client-side.
+        # Each card has an anchor with aria-label "Product Name (SKU) – …"
+        # and a visible price in the card text.
+        dom_rows: list[dict] = await page.evaluate(
+            """
+            () => {
+                const results = [];
+                const links = document.querySelectorAll('[data-slot="product-card-link"]');
+                links.forEach(link => {
+                    const ariaLabel = link.getAttribute('aria-label') || '';
+                    // "Dometic CFX5 25 (97000050759) – View product details in Electric Coolers"
+                    const skuM = ariaLabel.match(/\\(([0-9A-Z][0-9A-Za-z\\-]+)\\)/);
+                    const sku  = skuM ? skuM[1] : '';
+                    const name = ariaLabel.split('(')[0].trim().replace(/\\s*[\\u2013\\u2014-].*$/, '').trim();
+
+                    // Price lives in the card container as visible text "R 9,575.00"
+                    const card  = link.closest('li, article, [data-slot="product-card"]') || link.parentElement;
+                    const cardText = card ? card.innerText : '';
+                    const priceM = cardText.match(/R\\s*([0-9][0-9,]+(\\.[0-9]{2})?)/);
+                    const price  = priceM ? priceM[1].replace(/,/g, '') : '';
+
+                    if (name && price) {
+                        results.push({ sku, name, price });
+                    }
+                });
+                return results;
+            }
+            """
+        )
+        for item in dom_rows:
+            rows.append({
+                "sku":   item.get("sku", "").strip(),
+                "name":  item.get("name", "").strip(),
+                "price": item.get("price", "").strip(),
+            })
+
+        if rows:
+            # Deduplicate by sku
+            seen: set[str] = set()
+            rows = [r for r in rows if not (r["sku"] in seen or seen.add(r["sku"]))]  # type: ignore[func-returns-value]
+            log.info("[%s] dometic_lp: found %d products via product-card-link", self.config.get("supplier_key", "?"), len(rows))
+            return pd.DataFrame(rows)
+
+        # ── Fallback: JSON-LD (older Dometic pages / Pages Router sites) ──
         ld_texts: list[str] = await page.evaluate(
             "() => Array.from(document.querySelectorAll('script[type=\"application/ld+json\"]'))"
             ".map(s => s.textContent || '')"
@@ -388,77 +484,11 @@ class PlaywrightScraper(BaseScraper):
             except Exception:
                 pass
 
-        if rows:
-            log.info("[%s] dometic_lp: found %d products via JSON-LD", self.config.get("supplier_key", "?"), len(rows))
-            return pd.DataFrame(rows)
-
-        # ── 2. __NEXT_DATA__ ────────────────────────────────────────────
-        next_json: str = await page.evaluate(
-            "() => { const el = document.getElementById('__NEXT_DATA__'); return el ? el.textContent : ''; }"
-        )
-        if next_json:
-            try:
-                ndata = _json.loads(next_json)
-                text  = _json.dumps(ndata)
-                # Walk the JSON tree looking for {"sku": "...", "price": ...} objects
-                for m in _re.finditer(r'"sku"\s*:\s*"([^"]+)"', text):
-                    pos = m.start()
-                    chunk = text[max(0, pos - 200): pos + 500]
-                    name_m  = _re.search(r'"(?:name|title)"\s*:\s*"([^"]+)"', chunk)
-                    price_m = _re.search(r'"price"\s*:\s*\{[^}]*"value"\s*:\s*([0-9.]+)', chunk) or \
-                              _re.search(r'"price"\s*:\s*([0-9.]+)', chunk)
-                    if name_m and price_m:
-                        rows.append({
-                            "sku":   m.group(1).strip(),
-                            "name":  name_m.group(1).strip(),
-                            "price": price_m.group(1),
-                        })
-            except Exception:
-                pass
-
-        if rows:
-            # Deduplicate by sku
-            seen: set[str] = set()
-            rows = [r for r in rows if not (r["sku"] in seen or seen.add(r["sku"]))]  # type: ignore[func-returns-value]
-            log.info("[%s] dometic_lp: found %d products via __NEXT_DATA__", self.config.get("supplier_key", "?"), len(rows))
-            return pd.DataFrame(rows)
-
-        # ── 3. DOM heuristics ────────────────────────────────────────────
-        dom_rows: list[dict] = await page.evaluate(
-            """
-            () => {
-                const results = [];
-                // Dometic uses data-testid, data-product-code, or specific class patterns
-                const candidates = document.querySelectorAll(
-                    '[data-product-code], [data-sku], ' +
-                    '[class*="ProductTile"], [class*="product-tile"], ' +
-                    '[class*="ProductCard"], [class*="product-card"]'
-                );
-                candidates.forEach(el => {
-                    const nameEl  = el.querySelector('h2, h3, h4, [class*="title" i], [class*="name" i]');
-                    const priceEl = el.querySelector('[class*="price" i], [data-price]');
-                    const sku     = el.getAttribute('data-product-code') || el.getAttribute('data-sku') || '';
-                    const name    = nameEl ? nameEl.innerText.trim() : '';
-                    const rawP    = priceEl ? priceEl.innerText.replace(/[^0-9., ]/g, '').trim() : '';
-                    const price   = rawP.replace(/,/g, '').split(' ')[0];
-                    if (name && price) results.push({ sku, name, price });
-                });
-                return results;
-            }
-            """
-        )
-        for item in dom_rows:
-            rows.append({
-                "sku":   item.get("sku", "").strip(),
-                "name":  item.get("name", "").strip(),
-                "price": item.get("price", "").strip(),
-            })
-
         if not rows:
-            log.warning("[%s] dometic_lp: no products found on %s — page may require login or block bots",
+            log.warning("[%s] dometic_lp: no products found on %s",
                         self.config.get("supplier_key", "?"), url)
 
-        log.info("[%s] dometic_lp: %d products via DOM on %s",
+        log.info("[%s] dometic_lp: %d products scraped from %s",
                  self.config.get("supplier_key", "?"), len(rows), url)
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["sku", "name", "price"])
 

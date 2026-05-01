@@ -36,6 +36,7 @@ class ScrapeFallback(BaseModel):
     days_threshold: int = 14  # scrape only if no email in N days; 0 = always
     url: str = ""
     strategy: str = "table"  # table | pagination | api
+    brand_filter: str = ""   # if set, only keep products whose title contains this string
     auth: Optional[ScrapeAuth] = None
 
 

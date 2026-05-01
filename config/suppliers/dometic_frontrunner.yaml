@@ -25,8 +25,8 @@ source:
 scrape_fallback:
   enabled: true
   days_threshold: 0        # always scrape — no email feed
-  url: https://www.dometic.com/en-za/lp/front-runner-dometic
-  strategy: dometic_lp     # Playwright renderer with JSON-LD / DOM extraction
+  url: https://www.dometic.com/en-za/category/coolers/electric-coolers
+  strategy: dometic_lp     # Playwright renderer — waits for React hydration then extracts cards
 
 # Columns returned by dometic_lp: sku, name, price
 # Dometic.com prices are displayed inc. VAT for ZA customers.
@@ -38,13 +38,25 @@ column_map:
 sheet_name: null
 skip_rows: 0
 
-# Only keep camping fridge/freezer/cooler products from the landing page.
+# Dometic electric-cooler model names use codes (CFX3, CFX5, CFF, NRX, CD-)
+# rather than "fridge" or "freezer". Use include list with model prefixes
+# and exclude list to drop accessories (covers, slides, bags).
 description_filter:
   include:
+    - "cfx"
+    - "cff"
+    - "nrx"
+    - "cd-"
+    - "cdf"
     - "fridge"
     - "freezer"
     - "cooler"
-    - "cooling"
+  exclude:
+    - "cover"
+    - "slide"
+    - "bag"
+    - "cable"
+    - "bracket"
 
 price_formula:
   key: rrp_x_1.0

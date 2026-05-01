@@ -22,6 +22,22 @@ scrape_fallback:
   strategy: product_pages
   brand_filter: "Engel"  # only keep products with "Engel" in the title
 
+# Even with brand_filter="Engel", accessories like covers and cables have
+# "Engel" in the name. Use description_filter to drop non-fridge products.
+description_filter:
+  include:
+    - "fridge"
+    - "freezer"
+    - "cooler"
+  exclude:
+    - "cover"
+    - "cable"
+    - "slide"
+    - "bracket"
+    - "bag"
+    - "strap"
+    - "power supply"
+
 column_map:
   sku: sku
   description: description
