@@ -1,11 +1,11 @@
 name: Daily Price Sync
 
 on:
-  schedule:
-    # 07:00 SAST = 05:00 UTC
-    - cron: '0 5 * * *'
-    # 13:00 SAST = 11:00 UTC (midday check)
-    - cron: '0 11 * * *'
+  # schedule:  ← PAUSED 2026-05-02 — re-enable when ready for production
+  #   # 07:00 SAST = 05:00 UTC
+  #   - cron: '0 5 * * *'
+  #   # 13:00 SAST = 11:00 UTC (midday check)
+  #   - cron: '0 11 * * *'
   workflow_dispatch:
     inputs:
       supplier:

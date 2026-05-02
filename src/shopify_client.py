@@ -46,19 +46,32 @@ class ShopifyClient:
         variant_id: str,
         price: float,
         compare_at_price: Optional[float] = None,
+        product_id: Optional[str] = None,
     ) -> bool:
         """
         Update the price (and optional compare-at price) for a single variant.
+
+        Uses productVariantsBulkUpdate (required in Shopify API 2024-01+,
+        replaces the removed productVariantUpdate mutation).
 
         Args:
             variant_id:        Shopify variant GID, e.g. "gid://shopify/ProductVariant/1234"
             price:             New selling price in ZAR
             compare_at_price:  Strike-through price (usually the RRP)
+            product_id:        Parent product GID. If omitted it is fetched automatically.
         """
+        # productVariantsBulkUpdate requires the parent product ID
+        if not product_id:
+            product_id = self._get_variant_info(variant_id).get("product_id")
+        if not product_id:
+            raise ShopifyAPIError(
+                f"Could not resolve parent product ID for variant {variant_id}"
+            )
+
         mutation = """
-        mutation productVariantUpdate($input: ProductVariantInput!) {
-          productVariantUpdate(input: $input) {
-            productVariant {
+        mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants {
               id
               price
               compareAtPrice
@@ -70,17 +83,20 @@ class ShopifyClient:
           }
         }
         """
-        variables: dict = {
-            "input": {
-                "id": variant_id,
-                "price": f"{price:.2f}",
-            }
+        variant_input: dict = {
+            "id": variant_id,
+            "price": f"{price:.2f}",
         }
         if compare_at_price is not None:
-            variables["input"]["compareAtPrice"] = f"{compare_at_price:.2f}"
+            variant_input["compareAtPrice"] = f"{compare_at_price:.2f}"
+
+        variables = {
+            "productId": product_id,
+            "variants": [variant_input],
+        }
 
         data = self._graphql(mutation, variables)
-        errors = data.get("productVariantUpdate", {}).get("userErrors", [])
+        errors = data.get("productVariantsBulkUpdate", {}).get("userErrors", [])
         if errors:
             raise ShopifyAPIError(f"Variant price update errors: {errors}")
         return True
@@ -129,21 +145,7 @@ class ShopifyClient:
 
     def get_variant_inventory_item_id(self, variant_id: str) -> Optional[str]:
         """Fetch the inventoryItem GID for a product variant."""
-        query = """
-        query getVariant($id: ID!) {
-          productVariant(id: $id) {
-            id
-            inventoryItem {
-              id
-            }
-          }
-        }
-        """
-        data = self._graphql(query, {"id": variant_id})
-        variant = data.get("productVariant")
-        if not variant:
-            return None
-        return variant.get("inventoryItem", {}).get("id")
+        return self._get_variant_info(variant_id).get("inventory_item_id")
 
     def bulk_sync(
         self,
@@ -177,22 +179,32 @@ class ShopifyClient:
                 continue
 
             try:
+                # Fetch product_id + inventory_item_id in one query up front
+                # so both price update and inventory update can reuse the data
+                product_id: Optional[str] = None
+                inv_id: Optional[str] = None
+                if sync_price or sync_inventory:
+                    info = self._get_variant_info(variant_id)
+                    product_id = info.get("product_id")
+                    inv_id = info.get("inventory_item_id")
+                    time.sleep(_RATE_LIMIT_DELAY)
+
                 if sync_price:
                     price = float(row.get("selling_price") or 0)
                     rrp = row.get("rrp")
                     compare_at = float(rrp) if rrp else None
-                    self.update_variant_price(variant_id, price, compare_at)
+                    self.update_variant_price(
+                        variant_id, price, compare_at, product_id=product_id
+                    )
+                    time.sleep(_RATE_LIMIT_DELAY)
 
                 if sync_inventory:
                     qty = row.get("stock_qty")
-                    if qty is not None:
-                        inv_id = self.get_variant_inventory_item_id(variant_id)
-                        if inv_id:
-                            self.set_inventory_quantity(inv_id, location_id, int(qty))
-                            time.sleep(_RATE_LIMIT_DELAY)
+                    if qty is not None and inv_id:
+                        self.set_inventory_quantity(inv_id, location_id, int(qty))
+                        time.sleep(_RATE_LIMIT_DELAY)
 
                 log.debug("[Shopify] Synced %s (%d/%d)", sku, i, total)
-                time.sleep(_RATE_LIMIT_DELAY)
 
             except Exception as e:
                 log.error("[Shopify] Failed to sync %s: %s", sku, e)
@@ -204,8 +216,31 @@ class ShopifyClient:
         return failed
 
     # ------------------------------------------------------------------
-    # Low-level GraphQL with retry
+    # Low-level helpers
     # ------------------------------------------------------------------
+
+    def _get_variant_info(self, variant_id: str) -> dict:
+        """
+        Fetch parent product GID and inventoryItem GID for a variant in one query.
+
+        Returns:
+            {"product_id": str | None, "inventory_item_id": str | None}
+        """
+        query = """
+        query getVariantInfo($id: ID!) {
+          productVariant(id: $id) {
+            id
+            product { id }
+            inventoryItem { id }
+          }
+        }
+        """
+        data = self._graphql(query, {"id": variant_id})
+        variant = data.get("productVariant") or {}
+        return {
+            "product_id": (variant.get("product") or {}).get("id"),
+            "inventory_item_id": (variant.get("inventoryItem") or {}).get("id"),
+        }
 
     def _graphql(self, query: str, variables: dict) -> dict:
         for attempt in range(1, _MAX_RETRIES + 1):
