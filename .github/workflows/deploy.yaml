@@ -1,13 +1,24 @@
 name: Build and Deploy to Cloud Run
+# DISABLED 2026-05-02 — sync runs on GitHub Actions, not Cloud Run.
+# Docker images in Artifact Registry have been deleted. Re-enable only
+# if migrating back to Cloud Run for production scheduling.
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'src/**'
-      - 'scrapers/**'
-      - 'config/**'
+  workflow_dispatch:  # manual-only; push trigger removed
+    inputs:
+      confirm:
+        description: 'Type DEPLOY to confirm (workflow is normally disabled)'
+        required: true
+
+# Original push trigger (disabled):
+# on:
+#   push:
+#     branches:
+#       - main
+#     paths:
+#       - 'src/**'
+#       - 'scrapers/**'
+#       - 'config/**'
       - 'requirements.txt'
       - 'Dockerfile'
 
