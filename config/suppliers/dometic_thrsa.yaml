@@ -69,5 +69,5 @@ sku_normalization:
 shopify:
   sync_price: true
   sync_inventory: false    # THR prices only — no stock data from this source
-  location_id: "gid://shopify/Location/67975971075"
+  location_id: ""  # env: SHOPIFY_LOCATION_ID
   inventory_policy: deny

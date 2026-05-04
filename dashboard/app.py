@@ -2,6 +2,7 @@
 CFSA Price Sync — Dashboard
 Run with: python3 -m streamlit run dashboard/app.py
 """
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,12 +13,18 @@ from google.oauth2.service_account import Credentials
 import gspread
 
 # ─────────────────────────────────────────────────────────────
-# Config
+# Config — resolved from Streamlit secrets → env var → local file
 # ─────────────────────────────────────────────────────────────
-ROOT           = Path(__file__).parent.parent
-SA_KEY         = ROOT / "sa-key.json"
-SPREADSHEET_ID = "1YRVzl7E48Y8kQ3V6yJbNrzj8QqqH7016tEVQ0IkH9Co"
-SHEET_SCOPES   = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+ROOT         = Path(__file__).parent.parent
+SA_KEY       = ROOT / "sa-key.json"
+SHEET_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
+# Spreadsheet ID: set via st.secrets["spreadsheet_id"] on Streamlit Cloud
+# or SHEETS_SPREADSHEET_ID env var for local dev
+SPREADSHEET_ID = (
+    st.secrets.get("spreadsheet_id", "")
+    or os.getenv("SHEETS_SPREADSHEET_ID", "")
+)
 
 # Palette — green is used sparingly as ONE accent colour
 G      = "#00e87a"          # neon green — hero numbers & active states only

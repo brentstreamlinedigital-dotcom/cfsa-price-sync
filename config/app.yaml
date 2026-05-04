@@ -1,5 +1,6 @@
 # Global application configuration
-# All secrets should be stored in Google Secret Manager — reference keys here only.
+# ⚠  All values marked "env:" MUST be set as environment variables or
+#    GitHub Actions secrets — never hardcode real values in this file.
 
 app:
   name: cfsa-price-sync
@@ -7,44 +8,44 @@ app:
   timezone: Africa/Johannesburg
 
 google:
-  # Service account JSON path (local dev) or use Application Default Credentials (Cloud Run)
-  service_account_file: null   # set to path in .env for local dev
+  # Service account JSON path (local dev) or use Application Default Credentials
+  service_account_file: null   # set GOOGLE_APPLICATION_CREDENTIALS in .env
+
   project_id: cfsa-price-sync
 
   sheets:
-    # The Google Sheets spreadsheet ID (from the URL)
-    spreadsheet_id: 1YRVzl7E48Y8kQ3V6yJbNrzj8QqqH7016tEVQ0IkH9Co
+    # env: SHEETS_SPREADSHEET_ID
+    spreadsheet_id: ""
     master_sheet_name: master
     supplier_log_sheet_name: supplier_log
     error_flags_sheet_name: error_flags
 
   gmail:
-    # The mailbox to monitor for supplier emails
-    delegate_email: brent.streamlinedigital@gmail.com
+    # env: GMAIL_DELEGATE_EMAIL
+    delegate_email: ""
     processed_label: cfsa/processed
     pubsub_topic: projects/cfsa-price-sync/topics/cfsa-gmail-push
 
 shopify:
-  shop_domain: campingfridge.myshopify.com
-  # Access token stored in Secret Manager as SHOPIFY_ACCESS_TOKEN
+  # env: SHOPIFY_SHOP_DOMAIN
+  shop_domain: ""
+  # env: SHOPIFY_ACCESS_TOKEN  (GitHub Actions secret)
   api_version: "2024-10"
+  # env: SHOPIFY_LOCATION_ID  (global fallback; overrides per-supplier location_id)
+  location_id: ""
 
 firebase:
-  # Uses Application Default Credentials when running on Cloud Run
-  # Set GOOGLE_APPLICATION_CREDENTIALS for local dev
   collections:
     sync_runs: sync_runs
     price_changes: price_changes
     sync_errors: sync_errors
 
 alerts:
-  # Email alerts for large price changes
   enabled: true
-  recipient: brent.streamlinedigital@gmail.com
-  price_change_threshold_pct: 5.0   # alert if price moves more than this %
+  # env: ALERTS_RECIPIENT
+  recipient: ""
+  price_change_threshold_pct: 5.0
 
 sync:
-  # Max rows to write to Shopify per run (safety cap)
   shopify_write_cap: 500
-  # Dry run mode: parse + diff but don't write anywhere
   dry_run: false

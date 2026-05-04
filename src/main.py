@@ -61,14 +61,31 @@ def main(
     sa_file = app_cfg.get("google", {}).get("service_account_file") or os.getenv(
         "GOOGLE_APPLICATION_CREDENTIALS"
     )
-    spreadsheet_id = app_cfg["google"]["sheets"]["spreadsheet_id"]
+
+    # Env vars take priority over config file values so the repo can be
+    # public without exposing any real credentials.
+    spreadsheet_id = (
+        os.getenv("SHEETS_SPREADSHEET_ID")
+        or app_cfg["google"]["sheets"]["spreadsheet_id"]
+    )
+    if not spreadsheet_id:
+        raise RuntimeError("SHEETS_SPREADSHEET_ID env var is not set")
     sheets = SheetsClient(spreadsheet_id, service_account_file=sa_file)
 
     shopify_cfg = app_cfg.get("shopify", {})
+    shop_domain = os.getenv("SHOPIFY_SHOP_DOMAIN") or shopify_cfg.get("shop_domain", "")
+    if not shop_domain:
+        raise RuntimeError("SHOPIFY_SHOP_DOMAIN env var is not set")
     shopify = ShopifyClient(
-        shop_domain=shopify_cfg["shop_domain"],
+        shop_domain=shop_domain,
         access_token=_get_secret_or_env("SHOPIFY_ACCESS_TOKEN", sa_file),
         api_version=shopify_cfg.get("api_version", "2024-10"),
+    )
+
+    # Global Shopify location ID — used as fallback when supplier config omits it
+    location_id = (
+        os.getenv("SHOPIFY_LOCATION_ID")
+        or shopify_cfg.get("location_id", "")
     )
 
     firebase_logger = SyncLogger(
@@ -94,8 +111,12 @@ def main(
 
     if email_suppliers:
         try:
+            delegate_email = (
+                os.getenv("GMAIL_DELEGATE_EMAIL")
+                or gmail_cfg.get("delegate_email", "")
+            )
             poller = GmailPoller(
-                delegate_email=gmail_cfg.get("delegate_email", ""),
+                delegate_email=delegate_email,
                 processed_label=gmail_cfg.get("processed_label", "cfsa/processed"),
                 service_account_file=sa_file,
             )
@@ -169,7 +190,7 @@ def main(
     alert_cfg = app_cfg.get("alerts", {})
     price_alert_threshold = alert_cfg.get("price_change_threshold_pct", 15.0)
     shopify_write_cap = app_cfg.get("sync", {}).get("shopify_write_cap", 500)
-    location_id = shopify_cfg.get("location_id", "")
+    # location_id already resolved from env/config above in the init block
 
     all_alerts: list[dict] = []
     error_flag_rows: list[dict] = []
@@ -359,8 +380,12 @@ def main(
         sheets.append_error_flags(error_flag_rows)
 
     if all_alerts and alert_cfg.get("enabled") and not dry_run:
+        alerts_recipient = (
+            os.getenv("ALERTS_RECIPIENT")
+            or alert_cfg.get("recipient", "")
+        )
         _send_alert_email(
-            recipient=alert_cfg.get("recipient", ""),
+            recipient=alerts_recipient,
             alerts=all_alerts,
             run_id=run_id,
         )

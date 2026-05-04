@@ -47,14 +47,18 @@ jobs:
       - name: Run price sync
         env:
           GOOGLE_APPLICATION_CREDENTIALS: sa-key.json
-          SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
-          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
-          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
-          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          SHOPIFY_ACCESS_TOKEN:    ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          SHOPIFY_SHOP_DOMAIN:     ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
+          SHOPIFY_LOCATION_ID:     ${{ secrets.SHOPIFY_LOCATION_ID }}
+          SHEETS_SPREADSHEET_ID:   ${{ secrets.SHEETS_SPREADSHEET_ID }}
+          GMAIL_REFRESH_TOKEN:     ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_CLIENT_ID:         ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET:     ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_DELEGATE_EMAIL:    ${{ secrets.GMAIL_DELEGATE_EMAIL }}
+          ALERTS_RECIPIENT:        ${{ secrets.ALERTS_RECIPIENT }}
           SUPPLIER_FILTER: ${{ inputs.supplier }}
           DRY_RUN: ${{ inputs.dry_run }}
           GCP_PROJECT: cfsa-price-sync
-          SHEETS_SPREADSHEET_ID: 1YRVzl7E48Y8kQ3V6yJbNrzj8QqqH7016tEVQ0IkH9Co
         run: |
           ARGS="--trigger=schedule"
           if [ -n "$SUPPLIER_FILTER" ]; then ARGS="$ARGS --supplier $SUPPLIER_FILTER"; fi
