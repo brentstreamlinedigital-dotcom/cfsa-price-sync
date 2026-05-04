@@ -147,6 +147,56 @@ class ShopifyClient:
         """Fetch the inventoryItem GID for a product variant."""
         return self._get_variant_info(variant_id).get("inventory_item_id")
 
+    def get_sku_to_variant_map(self) -> dict[str, str]:
+        """
+        Fetch ALL product variants from the store and return a mapping of
+        normalised SKU (uppercase, stripped) → variant GID.
+
+        Used by the backfill step so the master sheet can be populated with
+        shopify_variant_id values without needing a price change to trigger it.
+        Paginates automatically if the store has >250 variants.
+        """
+        query = """
+        query getAllVariants($cursor: String) {
+          productVariants(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id
+                sku
+              }
+            }
+          }
+        }
+        """
+        sku_map: dict[str, str] = {}
+        cursor: Optional[str] = None
+
+        while True:
+            variables: dict = {}
+            if cursor:
+                variables["cursor"] = cursor
+
+            data = self._graphql(query, variables)
+            variants_data = data.get("productVariants", {})
+
+            for edge in variants_data.get("edges", []):
+                node = edge.get("node", {})
+                raw_sku = (node.get("sku") or "").strip()
+                vid = node.get("id")
+                if raw_sku and vid:
+                    # Normalise to uppercase so lookups are case-insensitive
+                    sku_map[raw_sku.upper()] = vid
+
+            page_info = variants_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            time.sleep(_RATE_LIMIT_DELAY)
+
+        log.info("[Shopify] Loaded %d variant SKUs from store", len(sku_map))
+        return sku_map
+
     def bulk_sync(
         self,
         rows: list[dict],

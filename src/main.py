@@ -374,7 +374,26 @@ def main(
         }
 
     # ------------------------------------------------------------------ #
-    # 6. Write error flags to sheet + send alert email if needed
+    # 6. Backfill shopify_variant_id for any newly discovered matches
+    # ------------------------------------------------------------------ #
+    # Fetch the full SKU→variant map from Shopify once per run and update any
+    # master sheet rows that don't yet have a shopify_variant_id.  This keeps
+    # the dashboard coverage numbers accurate even for products whose price
+    # hasn't changed since they were first scraped.
+    if not dry_run:
+        try:
+            log.info("Backfilling Shopify variant IDs from store catalog…")
+            sku_variant_map = shopify.get_sku_to_variant_map()
+            backfilled = sheets.backfill_shopify_variant_ids(sku_variant_map)
+            if backfilled:
+                log.info("Backfilled %d new shopify_variant_id values in master sheet", backfilled)
+            else:
+                log.info("Backfill complete — no new variant IDs to write")
+        except Exception as exc:
+            log.warning("Shopify variant backfill failed (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------ #
+    # 7. Write error flags to sheet + send alert email if needed
     # ------------------------------------------------------------------ #
     if error_flag_rows and not dry_run:
         sheets.append_error_flags(error_flag_rows)
@@ -391,7 +410,7 @@ def main(
         )
 
     # ------------------------------------------------------------------ #
-    # 7. Finish
+    # 8. Finish
     # ------------------------------------------------------------------ #
     total_duration = round(time.time() - start_time, 2)
     log.info(

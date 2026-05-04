@@ -123,14 +123,38 @@ class SheetsClient:
             else:
                 appends.append(values)
 
+        # Columns whose existing values should NEVER be overwritten by the sync
+        # (they are populated by backfill_shopify_variant_ids, not the scraper).
+        _PRESERVE_COLS = {"shopify_variant_id", "shopify_product_id"}
+
         # Batch update existing rows
         if updates:
+            # Build a fast lookup: header name → 0-based index
+            header_map = {h: i for i, h in enumerate(header)}
+            preserve_idxs = {
+                header_map[c] for c in _PRESERVE_COLS if c in header_map
+            }
+
             cell_updates = []
             for upd in updates:
+                row_num = upd["row_num"]
+                # Fetch the current sheet row so we can preserve protected cols
+                existing_row = all_values[row_num - 1]  # row_num is 1-based
+
                 for col_idx, val in enumerate(upd["values"], start=1):
-                    cell_updates.append(
-                        gspread.Cell(upd["row_num"], col_idx, val)
-                    )
+                    zero_idx = col_idx - 1
+                    if zero_idx in preserve_idxs:
+                        # Keep existing value if incoming value is blank
+                        if not val:
+                            existing_val = (
+                                existing_row[zero_idx]
+                                if len(existing_row) > zero_idx
+                                else ""
+                            )
+                            if existing_val:
+                                val = existing_val
+                    cell_updates.append(gspread.Cell(row_num, col_idx, val))
+
             ws.update_cells(cell_updates, value_input_option="USER_ENTERED")
             log.info("[%s] Updated %d existing rows in master", supplier, len(updates))
 
@@ -140,6 +164,58 @@ class SheetsClient:
             log.info("[%s] Appended %d new rows to master", supplier, len(appends))
 
         return len(updates) + len(appends)
+
+    def backfill_shopify_variant_ids(self, sku_to_variant: dict[str, str]) -> int:
+        """
+        For every master sheet row where shopify_variant_id is empty, look up
+        the row's SKU (case-insensitive) in *sku_to_variant* and write the
+        Shopify variant GID back to the sheet.
+
+        Called after each sync run so the dashboard coverage numbers stay
+        accurate even for products whose price hasn't changed since they were
+        first added to the sheet.
+
+        Args:
+            sku_to_variant: {UPPERCASE_SKU: "gid://shopify/ProductVariant/..."}
+
+        Returns:
+            Number of rows updated.
+        """
+        ws = self._get_or_create_worksheet("master", headers=MASTER_FIELDS)
+        all_values = ws.get_all_values()
+        if len(all_values) <= 1:
+            return 0
+
+        header = all_values[0]
+        try:
+            sku_col = header.index("sku")
+            variant_col = header.index("shopify_variant_id")
+        except ValueError:
+            log.warning("backfill_shopify_variant_ids: required columns not found in master sheet")
+            return 0
+
+        cell_updates: list[gspread.Cell] = []
+        for i, row in enumerate(all_values[1:], start=2):
+            existing_vid = row[variant_col].strip() if len(row) > variant_col else ""
+            if existing_vid:
+                continue  # already linked — leave it alone
+
+            sku_raw = row[sku_col].strip() if len(row) > sku_col else ""
+            if not sku_raw:
+                continue
+
+            variant_gid = sku_to_variant.get(sku_raw.upper())
+            if variant_gid:
+                cell_updates.append(gspread.Cell(i, variant_col + 1, variant_gid))
+
+        if cell_updates:
+            ws.update_cells(cell_updates, value_input_option="USER_ENTERED")
+            log.info(
+                "backfill_shopify_variant_ids: filled %d variant IDs in master sheet",
+                len(cell_updates),
+            )
+
+        return len(cell_updates)
 
     def update_shopify_sync_timestamp(
         self, sku: str, supplier: str, timestamp: str
