@@ -17,6 +17,7 @@ import gspread
 ROOT           = Path(__file__).parent.parent
 SA_KEY         = ROOT / "sa-key.json"
 SPREADSHEET_ID = "1YRVzl7E48Y8kQ3V6yJbNrzj8QqqH7016tEVQ0IkH9Co"
+SHEET_SCOPES   = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
 
 # Palette — green is used sparingly as ONE accent colour
 G      = "#00e87a"          # neon green — hero numbers & active states only
@@ -59,6 +60,37 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+
+# ─────────────────────────────────────────────────────────────
+# Password gate
+# ─────────────────────────────────────────────────────────────
+def _check_password() -> bool:
+    """Return True once the user has entered the correct password."""
+    if st.session_state.get("_authed"):
+        return True
+
+    # Centre a compact login card
+    _, mid, _ = st.columns([1, 1, 1])
+    with mid:
+        st.markdown(f"""
+        <div style="margin-top:80px;padding:32px 28px;background:{C1};
+                    border:1px solid {BDR};border-radius:14px;text-align:center">
+          <div style="font-size:1.8rem;margin-bottom:6px">🧊</div>
+          <div style="font-size:1rem;font-weight:650;color:{T1};margin-bottom:4px">CFSA Price Sync</div>
+          <div style="font-size:0.75rem;color:{T3};margin-bottom:24px">campingfridge.co.za · internal dashboard</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        pwd = st.text_input("Password", type="password", label_visibility="collapsed",
+                            placeholder="Enter password…")
+        if st.button("Sign in", use_container_width=True):
+            expected = st.secrets.get("dashboard_password", "")
+            if expected and pwd == expected:
+                st.session_state["_authed"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password")
+    return False
 
 # ─────────────────────────────────────────────────────────────
 # CSS — one clean system, no competing effects
@@ -356,16 +388,28 @@ hr {{ border-color: {BDR} !important; }}
 </style>
 """, unsafe_allow_html=True)
 
+# Enforce password gate — stops rendering here until authenticated
+if not _check_password():
+    st.stop()
+
 
 # ─────────────────────────────────────────────────────────────
 # Data
 # ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=120, show_spinner=False)
 def load_sheets():
-    creds = Credentials.from_service_account_file(
-        str(SA_KEY),
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-    )
+    # Streamlit Cloud: credentials come from st.secrets["gcp_service_account"]
+    # Local dev:       fall back to sa-key.json file
+    if "gcp_service_account" in st.secrets:
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]),
+            scopes=SHEET_SCOPES,
+        )
+    else:
+        creds = Credentials.from_service_account_file(
+            str(SA_KEY),
+            scopes=SHEET_SCOPES,
+        )
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(SPREADSHEET_ID)
 

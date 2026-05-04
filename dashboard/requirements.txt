@@ -1,0 +1,8 @@
+# Dashboard-only dependencies for Streamlit Cloud deployment
+# (excludes Playwright, firebase-admin, etc. — not needed for read-only dashboard)
+google-auth>=2.0
+gspread>=6.0
+streamlit>=1.54.0
+plotly>=5.20
+pandas>=2.0
+pillow>=12.2.0

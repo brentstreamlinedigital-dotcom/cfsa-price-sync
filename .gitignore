@@ -2,6 +2,7 @@
 .env
 *.json
 !package.json
+.streamlit/secrets.toml
 
 # Python
 __pycache__/
