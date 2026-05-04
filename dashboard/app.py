@@ -62,37 +62,6 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────
-# Password gate
-# ─────────────────────────────────────────────────────────────
-def _check_password() -> bool:
-    """Return True once the user has entered the correct password."""
-    if st.session_state.get("_authed"):
-        return True
-
-    # Centre a compact login card
-    _, mid, _ = st.columns([1, 1, 1])
-    with mid:
-        st.markdown(f"""
-        <div style="margin-top:80px;padding:32px 28px;background:{C1};
-                    border:1px solid {BDR};border-radius:14px;text-align:center">
-          <div style="font-size:1.8rem;margin-bottom:6px">🧊</div>
-          <div style="font-size:1rem;font-weight:650;color:{T1};margin-bottom:4px">CFSA Price Sync</div>
-          <div style="font-size:0.75rem;color:{T3};margin-bottom:24px">campingfridge.co.za · internal dashboard</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        pwd = st.text_input("Password", type="password", label_visibility="collapsed",
-                            placeholder="Enter password…")
-        if st.button("Sign in", use_container_width=True):
-            expected = st.secrets.get("dashboard_password", "")
-            if expected and pwd == expected:
-                st.session_state["_authed"] = True
-                st.rerun()
-            else:
-                st.error("Incorrect password")
-    return False
-
-# ─────────────────────────────────────────────────────────────
 # CSS — one clean system, no competing effects
 # ─────────────────────────────────────────────────────────────
 st.markdown(f"""
@@ -387,10 +356,6 @@ hr {{ border-color: {BDR} !important; }}
 }}
 </style>
 """, unsafe_allow_html=True)
-
-# Enforce password gate — stops rendering here until authenticated
-if not _check_password():
-    st.stop()
 
 
 # ─────────────────────────────────────────────────────────────
