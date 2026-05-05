@@ -361,6 +361,137 @@ hr {{ border-color: {BDR} !important; }}
     border: 1px solid {BDR} !important;
     border-radius: 8px !important;
 }}
+
+/* ══════════════════════════════════════════
+   MOBILE  ≤ 768 px
+   ══════════════════════════════════════════ */
+@media (max-width: 768px) {{
+
+    /* ── Reduce outer padding ──────────────── */
+    .block-container {{
+        padding: 1.2rem 1rem 3rem !important;
+        max-width: 100% !important;
+    }}
+
+    /* ── Nav: stack brand + meta ───────────── */
+    .nav {{
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding-bottom: 18px;
+        margin-bottom: 22px;
+    }}
+    .nav-right {{
+        width: 100%;
+        justify-content: space-between;
+    }}
+    .nav-time {{ text-align: left; }}
+
+    /* ── KPI grid: 2-up ────────────────────── */
+    .kpi-row {{
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 24px;
+    }}
+    /* 5th card spans full width so nothing is orphaned */
+    .kpi:last-child {{ grid-column: 1 / -1; }}
+    .kpi {{ padding: 14px 14px 12px; border-radius: 11px; }}
+    .kpi-num {{ font-size: 1.65rem; }}
+    .kpi-label {{ font-size: 0.63rem; margin-bottom: 7px; }}
+    .kpi-sub {{ font-size: 0.66rem; }}
+
+    /* ── Tabs: full-width + horizontal scroll ─ */
+    .stTabs [data-baseweb="tab-list"] {{
+        width: 100% !important;
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        scrollbar-width: none !important;
+        -webkit-overflow-scrolling: touch !important;
+        border-radius: 10px !important;
+    }}
+    .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {{ display: none; }}
+    .stTabs [data-baseweb="tab"] {{
+        padding: 7px 11px !important;
+        font-size: 0.74rem !important;
+        flex-shrink: 0 !important;
+    }}
+    .stTabs [data-baseweb="tab-panel"] {{ padding-top: 20px !important; }}
+
+    /* ── Supplier cards: wrap right side ──────── */
+    .card {{ padding: 12px 14px; }}
+    .card-active  {{ padding-left: 12px; }}
+    .card-amber, .card-red {{ padding-left: 12px; }}
+    .row-between {{ flex-wrap: wrap; gap: 8px; align-items: flex-start; }}
+    .card-title {{ font-size: 0.84rem; }}
+    .card-sub {{ font-size: 0.7rem; }}
+    .cov-num {{ font-size: 0.95rem; }}
+
+    /* ── Streamlit columns → stack vertically ─ */
+    [data-testid="stHorizontalBlock"] {{
+        flex-wrap: wrap !important;
+        gap: 0 !important;
+    }}
+    [data-testid="column"] {{
+        min-width: min(100%, 260px) !important;
+        flex: 1 1 260px !important;
+    }}
+
+    /* ── Inputs: bigger tap targets ───────────── */
+    .stSelectbox > div > div > div,
+    .stTextInput > div > div > input {{
+        font-size: 0.9rem !important;
+        padding: 10px 12px !important;
+        min-height: 44px !important;
+    }}
+    label {{ font-size: 0.72rem !important; }}
+
+    /* ── Refresh button: full-width, easy tap ─── */
+    .stButton > button {{
+        width: 100% !important;
+        min-height: 44px !important;
+        font-size: 0.85rem !important;
+    }}
+
+    /* ── Data tables: horizontal scroll ────────── */
+    [data-testid="stDataFrame"] > div {{
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }}
+    [data-testid="stDataFrame"] {{
+        min-width: 0 !important;
+    }}
+    .stDataFrame thead tr th {{
+        font-size: 0.62rem !important;
+        padding: 8px 8px !important;
+        white-space: nowrap;
+    }}
+    .stDataFrame tbody tr td {{
+        font-size: 0.76rem !important;
+        padding: 7px 8px !important;
+    }}
+
+    /* ── Metrics ──────────────────────────────── */
+    [data-testid="stMetricValue"] {{ font-size: 1.3rem !important; }}
+
+    /* ── Plotly chart: limit height on mobile ─── */
+    .js-plotly-plot {{ max-height: 320px !important; }}
+
+    /* ── Section label ─────────────────────────── */
+    .slabel {{ font-size: 0.63rem; margin-bottom: 12px; }}
+}}
+
+/* ══════════════════════════════════════════
+   SMALL PHONES  ≤ 400 px
+   ══════════════════════════════════════════ */
+@media (max-width: 400px) {{
+    .block-container {{ padding: 1rem 0.75rem 2.5rem !important; }}
+    .kpi-num {{ font-size: 1.45rem; }}
+    .kpi {{ padding: 12px 12px 10px; }}
+    .nav-name {{ font-size: 0.92rem; }}
+    .stTabs [data-baseweb="tab"] {{ padding: 6px 9px !important; font-size: 0.7rem !important; }}
+    /* 1-column KPI grid for very small screens */
+    .kpi-row {{ grid-template-columns: 1fr 1fr; gap: 8px; }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -447,9 +578,9 @@ if not supplier_log.empty and "timestamp" in supplier_log.columns:
 # ─────────────────────────────────────────────────────────────
 # Navigation bar
 # ─────────────────────────────────────────────────────────────
-_, rbtn = st.columns([11, 1])
+_, rbtn = st.columns([6, 1])
 with rbtn:
-    if st.button("↻ Refresh"):
+    if st.button("↻ Refresh", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
@@ -558,14 +689,15 @@ with t1:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="slabel">Price change log</div>', unsafe_allow_html=True)
 
-        # Filters
-        fa, fb, fc, fd = st.columns([2,2,2,2])
+        # Filters — 2×2 grid so each row is readable on mobile
+        fa, fb = st.columns(2)
         with fa:
             sup_opts = ["All suppliers"] + sorted(pc["supplier"].dropna().unique().tolist())
             sup_f = st.selectbox("Supplier", sup_opts, key="pc_s",
                                   format_func=lambda x: SUPPLIER_LABELS.get(x, x))
         with fb:
             dir_f = st.selectbox("Direction", ["All", "Price up ↑", "Price down ↓", "Alerts only"], key="pc_d")
+        fc, fd = st.columns(2)
         with fc:
             days_f = st.selectbox("Period", [7,14,30,90,365], key="pc_p",
                                    format_func=lambda x: f"Last {x} days")
@@ -701,16 +833,16 @@ with t2:
         fig2.add_bar(y=cdf["sup"], x=cdf["gap"],    orientation="h",
                      name="Not linked", marker_color="rgba(255,255,255,.06)", opacity=1)
         fig2.update_layout(
-            barmode="stack", height=max(260, len(cdf)*36),
+            barmode="stack", height=max(220, len(cdf)*34),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color=T3, family="Inter", size=11),
             margin=dict(l=0,r=0,t=4,b=0),
             legend=dict(orientation="h", x=1, xanchor="right", y=1.08,
                         bgcolor="rgba(0,0,0,0)", font_size=11),
             xaxis=dict(gridcolor="rgba(255,255,255,.04)", zeroline=False),
-            yaxis=dict(gridcolor="rgba(0,0,0,0)"),
+            yaxis=dict(gridcolor="rgba(0,0,0,0)", tickfont=dict(size=10)),
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, config={"responsive": True})
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -805,14 +937,13 @@ with t5:
         m["_sup"]  = m["supplier"].map(lambda x: SUPPLIER_LABELS.get(x,x))
         m["_site"] = m["shopify_variant_id"].astype(str).str.strip().ne("").map({True:"✓ Yes", False:"✗ No"})
 
-        fa, fb, fc = st.columns([2,2,3])
+        fa, fb = st.columns(2)
         with fa:
             sopts = ["All"] + sorted(m["_sup"].dropna().unique())
             sf = st.selectbox("Supplier", sopts, key="ms")
         with fb:
             wf = st.selectbox("On website", ["All","✓ Yes","✗ No"], key="mw")
-        with fc:
-            sq = st.text_input("Search SKU / description", placeholder="Engel 60L …", key="mq")
+        sq = st.text_input("Search SKU / description", placeholder="Engel 60L …", key="mq")
 
         msk = pd.Series([True]*len(m), index=m.index)
         if sf  != "All":          msk &= m["_sup"]  == sf
