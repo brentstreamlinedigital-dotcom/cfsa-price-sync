@@ -1782,9 +1782,18 @@ with t7:
 
                     # ── Price summary row ─────────────────────────────────
                     # When cost is missing, render an amber warning instead of "—"
-                    # so the operator knows this is a data gap (not just zero/empty)
-                    # — margin floor cannot be enforced without it.
-                    if cost_price:
+                    # so the operator knows this is a data gap (not just zero/empty).
+                    # When cost is estimated (rrp × ratio), tag with "(est.)" so
+                    # the operator knows it's not from a real supplier pricelist.
+                    cost_source = str(row.get("cost_source", "") or "").strip()
+                    if cost_price and cost_source == "estimated":
+                        cost_html = (
+                            f"<span title='Estimated wholesale cost: RRP × supplier ratio. "
+                            f"Replace with real cost from the supplier pricelist when available.'>"
+                            f"Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cost_price}</b>"
+                            f"&nbsp;<span style='color:{AMBER};font-size:.7rem'>(est.)</span></span>"
+                        )
+                    elif cost_price:
                         cost_html = (
                             f"<span>Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>"
                             f"R{cost_price}</b></span>"

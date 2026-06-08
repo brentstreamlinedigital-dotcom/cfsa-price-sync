@@ -32,6 +32,7 @@ _FIXED_PREFIX_HEADERS = [
     "product_name",
     "cfsa_current_price",
     "cost_price",
+    "cost_source",    # "supplier" | "estimated" | "" (unknown)
     "margin_pct",
 ]
 _FIXED_SUFFIX_HEADERS = [

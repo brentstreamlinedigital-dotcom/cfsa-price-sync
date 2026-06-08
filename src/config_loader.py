@@ -97,6 +97,12 @@ class SupplierConfig(BaseModel):
     sku_normalization: SkuNormalization = Field(default_factory=SkuNormalization)
     shopify: ShopifyConfig = Field(default_factory=ShopifyConfig)
 
+    # Optional cost-estimation fallback: when the supplier feed exposes only
+    # RRP (no wholesale cost), derive cost_inc = rrp × ratio. Stored as a
+    # plain dict to keep this loose — different methods may be added later
+    # (e.g. flat markup, per-product map).
+    cost_estimation: Optional[dict[str, Any]] = None
+
     @field_validator("supplier_key")
     @classmethod
     def key_must_be_slug(cls, v: str) -> str:

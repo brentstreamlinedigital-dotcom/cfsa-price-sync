@@ -90,6 +90,7 @@ def _build_log_row(
         "product_name":       str(product.get("description", "") or ""),
         "cfsa_current_price": f"{cfsa_price:.2f}",
         "cost_price":         f"{cost_price:.2f}" if cost_price else "",
+        "cost_source":        str(product.get("cost_source", "") or ""),
         "margin_pct":         f"{margin:.1f}%" if margin is not None else "",
         "cheapest_competitor":f"{cheapest_price:.2f}" if cheapest_price else "",
         "cheapest_source":    cheapest_source or "",

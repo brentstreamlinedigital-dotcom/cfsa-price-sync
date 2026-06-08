@@ -45,6 +45,7 @@ MASTER_FIELDS: list[str] = [
     "notes",
     "raw_sku",
     "row_hash",
+    "cost_source",    # "supplier" (from pricelist) | "estimated" (rrp × ratio)
 ]
 
 NUMERIC_FIELDS = ("cost_inc", "rrp", "delivery_cost", "competitor_price", "selling_price")
@@ -141,6 +142,29 @@ def normalize(
             cost_ex = _to_float(mapped.get("cost_ex_vat"))
             if cost_ex:
                 mapped["cost_inc"] = round(cost_ex * vat_rate, 2)
+
+        # 3c. ESTIMATE cost_inc from rrp when no real cost is available.
+        # Only fires when:
+        #   • cost_inc is still empty after steps 3 + 3b, AND
+        #   • supplier YAML has a `cost_estimation` block with enabled=true.
+        # Real cost from a supplier pricelist (extracted in step 3) ALWAYS wins.
+        # The estimated value is tagged via `cost_source = "estimated"` so the
+        # UI can mark it differently and the operator knows to replace it once
+        # the real supplier pricelist arrives.
+        if mapped.get("cost_inc") is None:
+            est_cfg = getattr(config, "cost_estimation", None)
+            # Support both pydantic-model and plain-dict configs
+            if est_cfg is None and isinstance(getattr(config, "__dict__", None), dict):
+                est_cfg = config.__dict__.get("cost_estimation")
+            if isinstance(est_cfg, dict) and est_cfg.get("enabled"):
+                ratio = _to_float(est_cfg.get("ratio"))
+                rrp_val = _to_float(mapped.get("rrp"))
+                if ratio and rrp_val and ratio > 0 and rrp_val > 0:
+                    mapped["cost_inc"] = round(rrp_val * ratio, 2)
+                    mapped["cost_source"] = "estimated"
+        # If we DID get a real cost above, tag the source explicitly
+        if mapped.get("cost_inc") is not None and not mapped.get("cost_source"):
+            mapped["cost_source"] = "supplier"
 
         # 4. Map stock status
         raw_status = _str(mapped.get("stock_status"))

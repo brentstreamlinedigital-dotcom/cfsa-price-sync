@@ -54,3 +54,12 @@ shopify:
   sync_inventory: true
   location_id: ""  # env: SHOPIFY_LOCATION_ID
   inventory_policy: deny
+
+# Estimated wholesale cost when supplier feed doesn't expose 'cost_inc'.
+# When set, cost_inc = rrp × ratio. Override per-product in master sheet
+# (manual entries are preserved by upsert). Real supplier emails with a
+# Cost Inc column take precedence — this only fires when cost is blank.
+cost_estimation:
+  enabled: true
+  method: rrp_ratio
+  ratio: 0.70    # tune to match real dealer margin once known
