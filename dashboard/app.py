@@ -1103,30 +1103,58 @@ with t2:
             "on every run."
         )
     else:
-        # ── Cost-data coverage banner ─────────────────────────────────
-        # Highlight suppliers whose products have no cost in master so the
-        # operator knows which feeds need a wholesale-cost source added.
+        # ── Cost coverage health banner ───────────────────────────────
+        # Three-state breakdown: real supplier cost / estimated (rrp×ratio)
+        # / completely missing. Operators need to know at a glance how
+        # trustworthy the margin numbers are across the catalog.
         sv_check = suppliers_view.copy()
-        sv_check["_has_cost"] = (
-            sv_check.get("cost_inc", "").astype(str).str.strip().ne("")
+        sv_check["_cost_str"] = sv_check.get("cost_inc", "").astype(str).str.strip()
+        sv_check["_src"] = sv_check.get("cost_source", "").astype(str).str.strip().str.lower()
+        n_total      = len(sv_check)
+        n_supplier   = int(((sv_check["_cost_str"] != "") & (sv_check["_src"] == "supplier")).sum())
+        n_estimated  = int(((sv_check["_cost_str"] != "") & (sv_check["_src"] == "estimated")).sum())
+        # cost present but source missing = legacy real cost from prior runs
+        n_legacy     = int(((sv_check["_cost_str"] != "") & (~sv_check["_src"].isin(["supplier", "estimated"]))).sum())
+        n_missing    = int((sv_check["_cost_str"] == "").sum())
+        n_real       = n_supplier + n_legacy
+
+        # Always-on summary banner (green when complete, amber when gaps)
+        complete = (n_missing == 0 and n_estimated == 0)
+        banner_color = G if complete else AMBER
+        banner_bg = "rgba(0,200,150,.06)" if complete else "rgba(255,170,0,.08)"
+        icon = "✓" if complete else "⚠"
+        st.markdown(
+            f"<div style='background:{banner_bg};border:1px solid {banner_color};"
+            f"border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem'>"
+            f"<b style='color:{banner_color}'>{icon} Cost data:</b> "
+            f"<span style='color:{T1}'>"
+            f"<b>{n_real}</b> from supplier pricelist  ·  "
+            f"<b>{n_estimated}</b> estimated (RRP × ratio)  ·  "
+            f"<b>{n_missing}</b> missing"
+            f"</span>"
+            f"<span style='color:{T3}'>  &nbsp;of {n_total} products total</span>"
+            f"</div>",
+            unsafe_allow_html=True,
         )
+
+        # Detailed call-out only when there are completely-missing suppliers
         sup_cost_status = (
-            sv_check.groupby("supplier")["_has_cost"].agg(["sum", "count"])
+            sv_check.assign(_has_cost=sv_check["_cost_str"] != "")
+                    .groupby("supplier")["_has_cost"].agg(["sum", "count"])
         )
         suppliers_no_cost = sup_cost_status[sup_cost_status["sum"] == 0]
-        total_missing = int((~sv_check["_has_cost"]).sum())
-        if total_missing > 0:
+        if not suppliers_no_cost.empty:
             no_cost_names = ", ".join(
                 SUPPLIER_LABELS.get(s, s) for s in suppliers_no_cost.index
-            ) or "—"
+            )
             st.markdown(
-                f"<div style='background:rgba(255,170,0,.08);border:1px solid {AMBER};"
-                f"border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem'>"
-                f"<b style='color:{AMBER}'>⚠ {total_missing} of {len(sv_check)} products "
-                f"have no wholesale cost.</b> "
-                f"<span style='color:{T3}'>Suppliers with zero cost data: <b>{no_cost_names}</b>. "
-                f"These feeds only expose retail prices — fill <code>cost_inc</code> manually "
-                f"in the master sheet (now preserved across syncs).</span>"
+                f"<div style='background:rgba(255,170,0,.04);border:1px solid {BDR};"
+                f"border-radius:6px;padding:8px 14px;margin-bottom:14px;font-size:.78rem;"
+                f"color:{T3}'>"
+                f"<b>Zero-cost suppliers:</b> {no_cost_names}. "
+                f"These feeds only expose retail prices — add <code>cost_inc</code> "
+                f"manually in master (preserved across syncs), or send the dealer-pricelist "
+                f"request templates in <code>docs/supplier_pricelist_requests.md</code>."
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -1165,17 +1193,30 @@ with t2:
                 # Show the columns that matter, in friendly order
                 cols_to_show = [
                     c for c in (
-                        "sku", "description", "cost_inc", "selling_price",
-                        "margin_pct", "rrp", "stock_status", "stock_qty",
-                        "live_on_site", "shopify_variant_id", "source", "last_updated",
+                        "sku", "description", "cost_inc", "cost_source",
+                        "selling_price", "margin_pct", "rrp", "stock_status",
+                        "stock_qty", "live_on_site", "shopify_variant_id",
+                        "source", "last_updated",
                     ) if c in grp.columns
                 ]
                 display_df = grp[cols_to_show].copy()
-                # Friendly column names
+
+                # Decorate the cost_source column with friendly tags so the
+                # operator can scan which costs are real (from a supplier
+                # pricelist) vs estimated (rrp × ratio) at a glance.
+                if "cost_source" in display_df.columns:
+                    def _tag(v: str) -> str:
+                        v = (v or "").strip().lower()
+                        if v == "supplier":  return "✓ supplier"
+                        if v == "estimated": return "≈ estimated"
+                        return "—"
+                    display_df["cost_source"] = display_df["cost_source"].astype(str).map(_tag)
+
                 display_df = display_df.rename(columns={
                     "sku": "SKU",
                     "description": "Description",
                     "cost_inc": "Cost (incl)",
+                    "cost_source": "Cost source",
                     "selling_price": "Selling price",
                     "margin_pct": "Margin",
                     "rrp": "RRP",
