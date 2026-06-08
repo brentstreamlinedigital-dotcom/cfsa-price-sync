@@ -25,3 +25,8 @@ Thumbs.db
 # Playwright
 playwright-report/
 test-results/
+
+# Runtime artifacts — never commit these, they're per-machine state
+*.log
+logs/*.lock
+logs/*.tmp

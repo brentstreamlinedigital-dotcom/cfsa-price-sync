@@ -28,6 +28,10 @@ class DiffResult:
     supplier: str
     new_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
     changed_rows: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # Rows whose supplier price increased by less than increase_threshold_pct — not written.
+    skipped_rows: list[dict] = field(default_factory=list)
+    # Rows whose row_hash was identical to master — not written (kept for logging).
+    unchanged_rows: list[dict] = field(default_factory=list)
     unchanged_count: int = 0
     alerts: list[dict] = field(default_factory=list)
 
@@ -45,6 +49,7 @@ def compute_diff(
     master: pd.DataFrame,
     supplier: str,
     price_alert_threshold_pct: float = PRICE_ALERT_THRESHOLD_PCT,
+    increase_threshold_pct: float = 2.0,
 ) -> DiffResult:
     """
     Compare incoming normalized rows against the current master sheet.
@@ -54,9 +59,13 @@ def compute_diff(
         master:    Current master sheet DataFrame (all suppliers)
         supplier:  Supplier key (used to filter master to this supplier's rows)
         price_alert_threshold_pct: Alert if selling_price moves by more than this %
+        increase_threshold_pct: Skip price increases smaller than this % (upside filter).
+            Decreases are always applied. Configured via pricing.increase_threshold_pct
+            in config/app.yaml.
 
     Returns:
-        DiffResult with new_rows, changed_rows, unchanged_count, alerts.
+        DiffResult with new_rows, changed_rows, skipped_rows, unchanged_rows,
+        unchanged_count, alerts.
     """
     result = DiffResult(supplier=supplier)
 
@@ -83,6 +92,8 @@ def compute_diff(
 
     new_rows: list[dict] = []
     changed_rows: list[dict] = []
+    skipped_rows: list[dict] = []
+    unchanged_rows: list[dict] = []
     unchanged = 0
     alerts: list[dict] = []
 
@@ -118,10 +129,37 @@ def compute_diff(
 
             if existing["row_hash"] == inc_hash:
                 unchanged += 1
+                unchanged_rows.append({
+                    "sku": sku,
+                    "selling_price": inc_price,
+                    "description": inc_row.get("description", ""),
+                })
                 continue
 
-            # Something changed — check if it's a large price move
+            # ── 2% upside filter ────────────────────────────────────────
+            # Small price increases are not worth the Shopify write cost
+            # and reduce noise. Decreases always flow through immediately.
             old_price = existing["selling_price"]
+            if old_price is not None and inc_price is not None and inc_price > old_price:
+                inc_pct = (inc_price - old_price) / old_price * 100
+                if inc_pct < increase_threshold_pct:
+                    log.info(
+                        "[%s] SKIPPED_BELOW_THRESHOLD %s: R%.2f → R%.2f (+%.2f%%) < %.1f%% threshold",
+                        supplier, sku, old_price, inc_price, inc_pct, increase_threshold_pct,
+                    )
+                    skipped_rows.append({
+                        "sku": sku,
+                        "supplier": supplier,
+                        "description": str(inc_row.get("description", "") or ""),
+                        "old_price": old_price,
+                        "new_price": inc_price,
+                        "pct_change": round(inc_pct, 2),
+                        "skip_reason": "Below 2% increase threshold",
+                    })
+                    continue  # Don't write to master sheet or Shopify
+            # ────────────────────────────────────────────────────────────
+
+            # Something changed — check if it's a large price move
             price_delta_pct = _price_delta_pct(old_price, inc_price)
 
             if price_delta_pct is not None and abs(price_delta_pct) >= price_alert_threshold_pct:
@@ -154,6 +192,8 @@ def compute_diff(
 
     result.new_rows = pd.DataFrame(new_rows) if new_rows else pd.DataFrame()
     result.changed_rows = pd.DataFrame(changed_rows) if changed_rows else pd.DataFrame()
+    result.skipped_rows = skipped_rows
+    result.unchanged_rows = unchanged_rows
     result.unchanged_count = unchanged
     result.alerts = alerts
 

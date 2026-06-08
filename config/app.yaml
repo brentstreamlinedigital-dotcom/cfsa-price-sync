@@ -49,3 +49,30 @@ alerts:
 sync:
   shopify_write_cap: 500
   dry_run: false
+
+pricing:
+  # Minimum supplier price increase (%) to trigger a Shopify update.
+  # Increases below this threshold are skipped and logged as SKIPPED_BELOW_THRESHOLD.
+  # Decreases are always applied immediately regardless of this setting.
+  increase_threshold_pct: 2.0
+  # Minimum gross margin (%) enforced by the competitor pricer.
+  # Suggested prices are floored at: cost_price * (1 + min_margin_pct / 100)
+  min_margin_pct: 15.0
+
+obsidian:
+  # Absolute path to your Obsidian vault root.
+  # Leave empty to disable Obsidian log output.
+  # e.g. /Users/brent/Documents/Obsidian Vault
+  vault_path: ""
+
+competitor_analysis:
+  # Cron: 09:00 SAST = 07:00 UTC
+  run_schedule: "0 7 * * *"
+  # Top N search results to evaluate per competitor per product
+  results_per_product: 5
+  # Minimum rapidfuzz token_set_ratio score (0–100) to accept a product match.
+  # 65 balances recall (catching unusual model names) against false positives.
+  # Raise toward 80 if you see wrong products being matched.
+  match_threshold: 65
+  # Seconds to wait between scraping each product (avoids hammering one site).
+  inter_product_delay: 0.2

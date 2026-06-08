@@ -123,9 +123,23 @@ class SheetsClient:
             else:
                 appends.append(values)
 
-        # Columns whose existing values should NEVER be overwritten by the sync
-        # (they are populated by backfill_shopify_variant_ids, not the scraper).
-        _PRESERVE_COLS = {"shopify_variant_id", "shopify_product_id"}
+        # Columns where an EXISTING value should win over a BLANK incoming
+        # value. The supplier sync only fills these when its source provides
+        # them (e.g. an emailed pricelist with a cost column). When the
+        # fallback path is a public website scrape, these columns come in
+        # empty — and without this guard, every fallback run would wipe the
+        # wholesale cost the operator manually entered.
+        #
+        # Note: a non-blank incoming value (real supplier data) STILL wins —
+        # we only preserve when the sync didn't bring its own value.
+        _PRESERVE_COLS = {
+            "shopify_variant_id",   # set by backfill_shopify_variant_ids
+            "shopify_product_id",   # set by backfill_shopify_variant_ids
+            "cost_inc",              # often manually entered; scrape feeds don't expose it
+            "delivery_cost",         # ditto
+            "delivery_charged",      # ditto
+            "stock_qty",             # exact qty rarely present in public scrapes
+        }
 
         # Batch update existing rows
         if updates:
@@ -258,6 +272,135 @@ class SheetsClient:
         )
         values = [str(row.get(h, "")) for h in self.SUPPLIER_LOG_HEADERS]
         ws.append_row(values, value_input_option="USER_ENTERED")
+
+    # ------------------------------------------------------------------
+    # Suppliers catalog view  (denormalized per-supplier table)
+    # ------------------------------------------------------------------
+
+    SUPPLIERS_VIEW_HEADERS = [
+        "supplier",              # supplier key (engel, dometic_thrsa, …)
+        "sku",                   # CFSA's SKU
+        "description",           # product name
+        "cost_inc",              # supplier cost (VAT incl.)
+        "rrp",                   # recommended retail
+        "selling_price",         # what CFSA sells it for
+        "margin_pct",            # (selling - cost) / cost × 100, blank if no cost
+        "stock_status",          # in_stock | out_of_stock | …
+        "stock_qty",             # numeric where available
+        "shopify_variant_id",    # blank ⇒ not yet linked to a Shopify product
+        "live_on_site",          # ✓ if shopify_variant_id present, else ✗
+        "source",                # email | scrape | manual
+        "last_updated",          # ISO timestamp from master
+        "rebuilt_at",            # when this view was last rebuilt
+    ]
+
+    def rebuild_suppliers_view(
+        self,
+        master_df: Optional[pd.DataFrame] = None,
+    ) -> int:
+        """
+        Rebuild the `suppliers` tab as a denormalized per-supplier catalog.
+
+        This is the canonical "what does each supplier sell us, at what cost,
+        and is it live on the site" view. It is **idempotent** — every call
+        wipes and rewrites the tab from the current master sheet. Safe to call
+        from every automation run.
+
+        Returns the number of data rows written.
+
+        Why a derived view (not a primary writer)?
+          • Master is the source of truth for supplier data.
+          • Grouping/margin/live-status are easy derivations that change every
+            time master changes — duplicating them as primary state would just
+            create sync drift.
+          • Other automations (competitor analysis, future "Jarvis" agents)
+            can read this single tab to know everything per supplier without
+            re-implementing the grouping logic.
+        """
+        if master_df is None:
+            master_df = self.read_master()
+
+        ws = self._get_or_create_worksheet(
+            "suppliers", headers=self.SUPPLIERS_VIEW_HEADERS
+        )
+
+        if master_df.empty:
+            ws.clear()
+            ws.append_row(self.SUPPLIERS_VIEW_HEADERS, value_input_option="USER_ENTERED")
+            log.info("suppliers view: master is empty, wrote header only")
+            return 0
+
+        df = master_df.copy()
+
+        # Helpers
+        def _to_float(v) -> Optional[float]:
+            try:
+                if v is None or v == "":
+                    return None
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        def _margin(cost, sell) -> str:
+            c, s = _to_float(cost), _to_float(sell)
+            if c and c > 0 and s is not None:
+                return f"{(s - c) / c * 100:.1f}%"
+            return ""
+
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        rows: list[list[str]] = []
+
+        # Sort: supplier (alpha), then sku — gives a stable, scannable layout.
+        df["_sup"] = df.get("supplier", "").astype(str).str.lower()
+        df["_sku"] = df.get("sku", "").astype(str)
+        df = df.sort_values(["_sup", "_sku"], ascending=[True, True])
+
+        for _, r in df.iterrows():
+            variant_id = str(r.get("shopify_variant_id", "") or "").strip()
+            live = "✓" if variant_id else "✗"
+            rows.append([
+                str(r.get("supplier", "") or ""),
+                str(r.get("sku", "") or ""),
+                str(r.get("description", "") or ""),
+                str(r.get("cost_inc", "") or ""),
+                str(r.get("rrp", "") or ""),
+                str(r.get("selling_price", "") or ""),
+                _margin(r.get("cost_inc"), r.get("selling_price")),
+                str(r.get("stock_status", "") or ""),
+                str(r.get("stock_qty", "") or ""),
+                variant_id,
+                live,
+                str(r.get("source", "") or ""),
+                str(r.get("last_updated", "") or ""),
+                now_str,
+            ])
+
+        # Atomically replace contents: clear, write header, append data
+        ws.clear()
+        ws.append_row(self.SUPPLIERS_VIEW_HEADERS, value_input_option="USER_ENTERED")
+        if rows:
+            ws.append_rows(rows, value_input_option="USER_ENTERED")
+        log.info("suppliers view: rebuilt %d rows across %d suppliers",
+                 len(rows), df["_sup"].nunique() if not df.empty else 0)
+        return len(rows)
+
+    def read_suppliers_view(self) -> pd.DataFrame:
+        """
+        Read the denormalized suppliers tab.
+
+        Returns an empty DataFrame if the tab does not yet exist — callers
+        should call rebuild_suppliers_view() first if they expect data.
+        """
+        try:
+            ws = self._spreadsheet.worksheet("suppliers")
+        except gspread.WorksheetNotFound:
+            return pd.DataFrame(columns=self.SUPPLIERS_VIEW_HEADERS)
+        values = ws.get_all_values()
+        if not values:
+            return pd.DataFrame(columns=self.SUPPLIERS_VIEW_HEADERS)
+        headers = values[0]
+        rows = [(r + [""] * len(headers))[:len(headers)] for r in values[1:]]
+        return pd.DataFrame(rows, columns=headers)
 
     # ------------------------------------------------------------------
     # Error flags sheet
@@ -433,6 +576,45 @@ class SheetsClient:
             for r in rows
         ]
         ws.append_rows(values, value_input_option="USER_ENTERED")
+
+    # ------------------------------------------------------------------
+    # Price sync log sheet
+    # ------------------------------------------------------------------
+
+    PRICE_SYNC_LOG_HEADERS = [
+        "timestamp",
+        "sku",
+        "product_name",
+        "old_supplier_price",
+        "new_supplier_price",
+        "pct_change",
+        "direction",
+        "applied",
+        "skip_reason",
+        "shopify_updated_at",
+    ]
+
+    def append_price_sync_log(self, rows: list[dict[str, Any]]) -> None:
+        """
+        Append one row per processed product to the price_sync_log sheet.
+
+        Columns: timestamp, sku, product_name, old_supplier_price,
+                 new_supplier_price, pct_change, direction, applied,
+                 skip_reason, shopify_updated_at.
+
+        Creates the tab if it doesn't exist. Never overwrites existing data.
+        """
+        if not rows:
+            return
+        ws = self._get_or_create_worksheet(
+            "price_sync_log", headers=self.PRICE_SYNC_LOG_HEADERS
+        )
+        values = [
+            [str(r.get(h, "") or "") for h in self.PRICE_SYNC_LOG_HEADERS]
+            for r in rows
+        ]
+        ws.append_rows(values, value_input_option="USER_ENTERED")
+        log.info("Appended %d rows to price_sync_log sheet", len(values))
 
     # ------------------------------------------------------------------
     # Internal helpers

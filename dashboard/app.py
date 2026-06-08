@@ -2,22 +2,34 @@
 CFSA Price Sync — Dashboard
 Run with: python3 -m streamlit run dashboard/app.py
 """
+import json
 import os
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
 import gspread
+import yaml
+
+# Ensure repo root is importable (needed for src.* and scrapers.*)
+ROOT = Path(__file__).parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # ─────────────────────────────────────────────────────────────
 # Config — resolved from Streamlit secrets → env var → local file
 # ─────────────────────────────────────────────────────────────
-ROOT         = Path(__file__).parent.parent
 SA_KEY       = ROOT / "sa-key.json"
 SHEET_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive.readonly"]
 
 # Spreadsheet ID: set via st.secrets["spreadsheet_id"] on Streamlit Cloud
 # or SHEETS_SPREADSHEET_ID env var for local dev
@@ -60,6 +72,22 @@ SUPPLIER_LABELS = {
     "frozen":              "Frozen",
 }
 ACTIVE_SUPPLIERS = {"flex", "engel", "snomaster", "lite_optec", "dag", "dometic_thrsa", "dometic_frontrunner"}
+
+# ── Competitor config ──────────────────────────────────────────────────────
+def _load_competitor_config() -> list[dict]:
+    try:
+        cfg_path = ROOT / "config" / "competitors.yaml"
+        with open(cfg_path) as f:
+            data = yaml.safe_load(f) or {}
+        comps = [c for c in data.get("competitors", []) if c.get("enabled", True)]
+        return sorted(comps, key=lambda c: c.get("priority", 99))
+    except Exception:
+        return []
+
+COMPETITORS = _load_competitor_config()
+# Column names in the Google Sheet for each competitor's price
+COMP_PRICE_COLS = [f"{c['name']}_price" for c in COMPETITORS]
+COMP_DISPLAY    = {c["name"]: c.get("display_name", c["name"]) for c in COMPETITORS}
 
 st.set_page_config(
     page_title="CFSA Price Sync",
@@ -497,6 +525,97 @@ hr {{ border-color: {BDR} !important; }}
 
 
 # ─────────────────────────────────────────────────────────────
+# Subprocess env helper
+# ─────────────────────────────────────────────────────────────
+def _subprocess_env() -> dict:
+    """
+    Build an env dict for child processes that inherits the current process
+    environment and layers in any credentials/secrets that may only exist in
+    Streamlit secrets (not in the OS environment).
+    """
+    import os, tempfile, json
+    env = os.environ.copy()
+
+    # Spreadsheet ID
+    if SPREADSHEET_ID and not env.get("SHEETS_SPREADSHEET_ID"):
+        env["SHEETS_SPREADSHEET_ID"] = SPREADSHEET_ID
+
+    # Shopify credentials
+    for key, secret_key in [
+        ("SHOPIFY_SHOP_DOMAIN",  "shopify_shop_domain"),
+        ("SHOPIFY_ACCESS_TOKEN", "shopify_access_token"),
+    ]:
+        if not env.get(key):
+            val = st.secrets.get(secret_key, "")
+            if val:
+                env[key] = val
+
+    # GCP service account — write to a temp file if coming from st.secrets
+    if not env.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        if "gcp_service_account" in st.secrets:
+            sa_info = dict(st.secrets["gcp_service_account"])
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            )
+            json.dump(sa_info, tmp)
+            tmp.close()
+            env["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
+        elif SA_KEY.exists():
+            env["GOOGLE_APPLICATION_CREDENTIALS"] = str(SA_KEY)
+
+    return env
+
+
+# ─────────────────────────────────────────────────────────────
+# Automation status helpers
+# ─────────────────────────────────────────────────────────────
+_LOGS_DIR = ROOT / "logs"
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if the process with this PID is still running."""
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)   # signal 0 = check only, no kill
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+    except Exception:
+        return False
+
+def _read_automation_status(automation: str) -> dict:
+    """Read the status JSON for an automation. Returns idle dict if not present."""
+    path = _LOGS_DIR / f"{automation}_status.json"
+    if not path.exists():
+        return {"automation": automation, "status": "idle", "total": 0, "done": 0, "stage": ""}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {"automation": automation, "status": "idle", "total": 0, "done": 0, "stage": ""}
+
+def _is_running(automation: str) -> tuple[bool, dict]:
+    """Return (is_running, status_data). Running means status=running|starting AND PID alive."""
+    s = _read_automation_status(automation)
+    if s.get("status") in ("running", "starting") and _pid_alive(s.get("pid", 0)):
+        return True, s
+    return False, s
+
+def _render_progress(status: dict, placeholder) -> None:
+    """Render a live progress bar into a Streamlit placeholder."""
+    total   = int(status.get("total", 0))
+    done    = int(status.get("done", 0))
+    stage   = status.get("stage", "Working…")
+    current = status.get("current", "")
+    pct     = done / total if total > 0 else 0.0
+    label   = f"{stage}  ·  {done}/{total}" if total else stage
+    if current:
+        label += f"  ·  {current}"
+    with placeholder.container():
+        st.progress(pct, text=label)
+        st.caption(f"Last updated {status.get('last_updated', '')[:19].replace('T', ' ')} UTC  ·  PID {status.get('pid', '—')}")
+
+
+# ─────────────────────────────────────────────────────────────
 # Data
 # ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=120, show_spinner=False)
@@ -517,26 +636,78 @@ def load_sheets():
     sh = gc.open_by_key(SPREADSHEET_ID)
 
     def to_df(name):
+        """
+        Read a worksheet into a DataFrame.
+
+        We avoid gspread's get_all_records() because it raises when the header
+        row contains duplicate or empty strings (which happens whenever a
+        write adds trailing blank columns). Instead we read raw values and
+        build the DataFrame ourselves — robust to trailing blanks, duplicate
+        headers, and ragged rows.
+        """
         try:
-            data = sh.worksheet(name).get_all_records()
-            return pd.DataFrame(data) if data else pd.DataFrame()
+            ws = sh.worksheet(name)
         except Exception:
             return pd.DataFrame()
+        try:
+            values = ws.get_all_values()
+        except Exception:
+            return pd.DataFrame()
+        if not values:
+            return pd.DataFrame()
+        headers = values[0]
+        # Trim trailing blank header columns
+        while headers and not headers[-1].strip():
+            headers.pop()
+        # De-duplicate any remaining empty / repeated headers
+        seen = {}
+        clean_headers = []
+        for i, h in enumerate(headers):
+            h = h.strip() or f"col_{i}"
+            if h in seen:
+                seen[h] += 1
+                h = f"{h}_{seen[h]}"
+            else:
+                seen[h] = 0
+            clean_headers.append(h)
+        width = len(clean_headers)
+        rows = []
+        for raw_row in values[1:]:
+            # Pad / truncate to header width so ragged rows don't break the frame
+            row = (raw_row + [""] * width)[:width]
+            # Failsafe: drop "header-as-data" rows — these occur when an
+            # older writer inserted a duplicate header row (which we have
+            # since fixed, but historical sheets may still contain them).
+            # Detect: every cell equals its column name (case-insensitive).
+            if all(
+                str(cell).strip().lower() == str(col).strip().lower()
+                for cell, col in zip(row, clean_headers)
+            ):
+                continue
+            rows.append(row)
+        return pd.DataFrame(rows, columns=clean_headers)
 
-    return {k: to_df(k) for k in ["master", "price_changes", "supplier_log", "error_flags", "new_products"]}
+    return {k: to_df(k) for k in [
+        "master", "price_changes", "supplier_log", "error_flags",
+        "new_products", "price_sync_log", "competitor_analysis_log",
+        "suppliers",
+    ]}
 
 with st.spinner(""):
     try:
-        sheets        = load_sheets()
-        master        = sheets["master"]
-        price_changes = sheets["price_changes"]
-        supplier_log  = sheets["supplier_log"]
-        error_flags   = sheets["error_flags"]
-        new_products  = sheets["new_products"]
-        load_error    = None
+        sheets               = load_sheets()
+        master               = sheets["master"]
+        price_changes        = sheets["price_changes"]
+        supplier_log         = sheets["supplier_log"]
+        error_flags          = sheets["error_flags"]
+        new_products         = sheets["new_products"]
+        price_sync_log       = sheets["price_sync_log"]
+        comp_analysis_log    = sheets["competitor_analysis_log"]
+        suppliers_view       = sheets["suppliers"]
+        load_error           = None
     except Exception as e:
         load_error = str(e)
-        master = price_changes = supplier_log = error_flags = new_products = pd.DataFrame()
+        master = price_changes = supplier_log = error_flags = new_products = price_sync_log = comp_analysis_log = suppliers_view = pd.DataFrame()
 
 if load_error:
     st.error(f"Could not connect to Google Sheets: {load_error}")
@@ -660,10 +831,83 @@ st.markdown(f"""
 
 
 # ─────────────────────────────────────────────────────────────
+# Live progress fragments — auto-refresh every 3 s, no page reload
+# ─────────────────────────────────────────────────────────────
+def _maybe_autorefresh_on_complete(automation: str, status: dict) -> bool:
+    """
+    If the automation just transitioned to 'completed' (a completed_at we haven't
+    seen yet), clear the Sheets cache and trigger a full-app rerun so the latest
+    data shows up without the user having to click Refresh.
+
+    Returns True if a rerun was triggered (caller should stop rendering).
+    """
+    if status.get("status") != "completed":
+        return False
+    completed_at = status.get("completed_at") or ""
+    if not completed_at:
+        return False
+    key = f"_seen_completed_{automation}"
+    if st.session_state.get(key) == completed_at:
+        return False
+    # New completion → mark seen, clear cache, full app rerun
+    st.session_state[key] = completed_at
+    st.cache_data.clear()
+    st.rerun(scope="app")
+    return True
+
+
+@st.fragment(run_every=3)
+def _sync_progress_fragment():
+    running, s = _is_running("price_sync")
+    st_val = s.get("status", "idle")
+    if running:
+        total = int(s.get("total", 0))
+        done  = int(s.get("done", 0))
+        pct   = done / total if total > 0 else 0.05
+        stage = s.get("stage", "Working…")
+        lbl   = stage + (f"  ({done}/{total} suppliers)" if total else "")
+        if s.get("current"):
+            lbl += f"  —  {s['current']}"
+        st.progress(pct, text=lbl)
+        st.caption(f"PID {s.get('pid','—')}  ·  started {s.get('started_at','')[:19].replace('T',' ')} UTC")
+    elif st_val == "completed":
+        if _maybe_autorefresh_on_complete("price_sync", s):
+            return  # full-app rerun in progress
+        total = s.get("total", 0)
+        st.success(f"✓ Sync completed — {total} supplier{'s' if total != 1 else ''} processed.")
+    elif st_val == "failed":
+        st.error(f"✗ Sync failed: {s.get('error','unknown error')}")
+
+
+@st.fragment(run_every=3)
+def _ca_progress_fragment():
+    running, s = _is_running("competitor_analysis")
+    st_val = s.get("status", "idle")
+    if running:
+        total = int(s.get("total", 0))
+        done  = int(s.get("done", 0))
+        pct   = done / total if total > 0 else 0.02
+        stage = s.get("stage", "Working…")
+        lbl   = stage + (f"  ({done}/{total} products)" if total else "")
+        if s.get("current"):
+            lbl += f"  —  {s['current']}"
+        st.progress(pct, text=lbl)
+        st.caption(f"PID {s.get('pid','—')}  ·  started {s.get('started_at','')[:19].replace('T',' ')} UTC")
+    elif st_val == "completed":
+        if _maybe_autorefresh_on_complete("competitor_analysis", s):
+            return  # full-app rerun in progress
+        total = s.get("total", 0)
+        st.success(f"✓ Analysis completed — {total} product{'s' if total != 1 else ''} analysed.")
+    elif st_val == "failed":
+        st.error(f"✗ Analysis failed: {s.get('error','unknown error')}")
+
+
+# ─────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────
-t1, t2, t3, t4, t5 = st.tabs([
-    "Price Changes", "Suppliers", "Alerts", "New Products", "All Products"
+t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+    "Price Changes", "Suppliers", "Alerts", "New Products",
+    "All Products", "Price Sync", "Competitor Analysis",
 ])
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -844,6 +1088,108 @@ with t2:
         )
         st.plotly_chart(fig2, use_container_width=True, config={"responsive": True})
 
+    # ── Per-supplier catalog (denormalized view) ─────────────────────
+    # Source: the `suppliers` tab, rebuilt by both automations on every run.
+    # This is the same data both the price-sync and competitor automations
+    # see — keeps "what we think the catalog is" and "what the UI shows"
+    # always identical.
+    st.markdown(f"<div style='margin-top:28px'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="slabel">Catalog by supplier — costs, prices, margin & stock</div>', unsafe_allow_html=True)
+
+    if suppliers_view.empty:
+        st.info(
+            "The `suppliers` tab hasn't been built yet. Run the price sync or "
+            "competitor analysis once — both automations refresh this view "
+            "on every run."
+        )
+    else:
+        # ── Cost-data coverage banner ─────────────────────────────────
+        # Highlight suppliers whose products have no cost in master so the
+        # operator knows which feeds need a wholesale-cost source added.
+        sv_check = suppliers_view.copy()
+        sv_check["_has_cost"] = (
+            sv_check.get("cost_inc", "").astype(str).str.strip().ne("")
+        )
+        sup_cost_status = (
+            sv_check.groupby("supplier")["_has_cost"].agg(["sum", "count"])
+        )
+        suppliers_no_cost = sup_cost_status[sup_cost_status["sum"] == 0]
+        total_missing = int((~sv_check["_has_cost"]).sum())
+        if total_missing > 0:
+            no_cost_names = ", ".join(
+                SUPPLIER_LABELS.get(s, s) for s in suppliers_no_cost.index
+            ) or "—"
+            st.markdown(
+                f"<div style='background:rgba(255,170,0,.08);border:1px solid {AMBER};"
+                f"border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem'>"
+                f"<b style='color:{AMBER}'>⚠ {total_missing} of {len(sv_check)} products "
+                f"have no wholesale cost.</b> "
+                f"<span style='color:{T3}'>Suppliers with zero cost data: <b>{no_cost_names}</b>. "
+                f"These feeds only expose retail prices — fill <code>cost_inc</code> manually "
+                f"in the master sheet (now preserved across syncs).</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        # Last-refreshed timestamp from the first row (all rows share the value)
+        rebuilt_at = ""
+        if "rebuilt_at" in suppliers_view.columns and not suppliers_view.empty:
+            rebuilt_at = str(suppliers_view["rebuilt_at"].iloc[0])
+        if rebuilt_at:
+            st.caption(f"View last rebuilt: **{rebuilt_at}**  ·  Source: `master` sheet")
+
+        # Group by supplier for the catalog
+        sv = suppliers_view.copy()
+        # Numeric coercion for sorting/aggregation only — display stays as strings
+        for col in ("cost_inc", "selling_price", "rrp"):
+            if col in sv.columns:
+                sv[f"_{col}_num"] = pd.to_numeric(sv[col], errors="coerce")
+
+        for sup_key in sorted(sv["supplier"].dropna().unique()):
+            grp = sv[sv["supplier"] == sup_key]
+            if grp.empty:
+                continue
+            n_total  = len(grp)
+            n_linked = (grp["live_on_site"] == "✓").sum()
+            avg_cost = grp.get("_cost_inc_num", pd.Series(dtype=float)).mean()
+            avg_sell = grp.get("_selling_price_num", pd.Series(dtype=float)).mean()
+            display_name = SUPPLIER_LABELS.get(sup_key, sup_key.replace("_", " ").title())
+
+            header = (
+                f"**{display_name}**  ·  "
+                f"{n_total} products  ·  {n_linked} live on site"
+            )
+            if pd.notna(avg_cost) and pd.notna(avg_sell):
+                header += f"  ·  avg cost R{avg_cost:,.0f}  ·  avg sell R{avg_sell:,.0f}"
+
+            with st.expander(header, expanded=False):
+                # Show the columns that matter, in friendly order
+                cols_to_show = [
+                    c for c in (
+                        "sku", "description", "cost_inc", "selling_price",
+                        "margin_pct", "rrp", "stock_status", "stock_qty",
+                        "live_on_site", "shopify_variant_id", "source", "last_updated",
+                    ) if c in grp.columns
+                ]
+                display_df = grp[cols_to_show].copy()
+                # Friendly column names
+                display_df = display_df.rename(columns={
+                    "sku": "SKU",
+                    "description": "Description",
+                    "cost_inc": "Cost (incl)",
+                    "selling_price": "Selling price",
+                    "margin_pct": "Margin",
+                    "rrp": "RRP",
+                    "stock_status": "Stock",
+                    "stock_qty": "Qty",
+                    "live_on_site": "Live",
+                    "shopify_variant_id": "Variant ID",
+                    "source": "Source",
+                    "last_updated": "Last updated",
+                })
+                st.dataframe(
+                    display_df, use_container_width=True, hide_index=True,
+                )
+
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # TAB 3 — Alerts
@@ -973,6 +1319,730 @@ with t5:
             dm.style.apply(_ms_style, axis=1).set_properties(**{"background-color":C1,"color":T1,"font-size":"0.81rem"}),
             use_container_width=True, height=520, hide_index=True,
         )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 6 — Price Sync
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with t6:
+    # ── Summary KPIs from latest run ──────────────────────────────────
+    st.markdown('<div class="slabel">Last run summary</div>', unsafe_allow_html=True)
+
+    psl = price_sync_log.copy() if not price_sync_log.empty else pd.DataFrame()
+
+    if not psl.empty and "timestamp" in psl.columns:
+        psl["_ts"] = pd.to_datetime(psl["timestamp"], errors="coerce")
+        last_ts = psl["_ts"].dropna().max()
+        last_run_rows = psl[psl["_ts"] == last_ts] if pd.notna(last_ts) else psl.head(0)
+
+        total_processed = len(last_run_rows)
+        n_applied       = (last_run_rows["applied"].astype(str).str.lower() == "true").sum() if "applied" in last_run_rows.columns else 0
+        n_skipped       = (
+            last_run_rows[
+                (last_run_rows["applied"].astype(str).str.lower() == "false") &
+                (last_run_rows["skip_reason"].astype(str).str.lower().str.contains("threshold", na=False))
+            ].shape[0]
+            if "skip_reason" in last_run_rows.columns else 0
+        )
+        n_errors        = (
+            last_run_rows[
+                (last_run_rows["applied"].astype(str).str.lower() == "false") &
+                (last_run_rows["skip_reason"].astype(str).str.lower().str.contains("alert", na=False))
+            ].shape[0]
+            if "skip_reason" in last_run_rows.columns else 0
+        )
+        last_run_str = last_ts.strftime("%d %b %Y  %H:%M UTC") if pd.notna(last_ts) else "—"
+    else:
+        total_processed = n_applied = n_skipped = n_errors = 0
+        last_run_str = "No runs yet"
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Last Run", last_run_str)
+    m2.metric("Processed", total_processed)
+    m3.metric("Applied", n_applied, help="Price changes pushed to Shopify or written to master sheet")
+    m4.metric("Skipped", n_skipped, help="Price increases below the 2% threshold — not written")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Manual trigger button ─────────────────────────────────────────
+    st.markdown('<div class="slabel">Manual trigger</div>', unsafe_allow_html=True)
+
+    _sync_running, _sync_status = _is_running("price_sync")
+
+    col_btn, col_out = st.columns([2, 5])
+    with col_btn:
+        if st.button(
+            "⏸ Running…" if _sync_running else "▶ Trigger Sync Now",
+            use_container_width=True,
+            disabled=_sync_running,
+        ) and not _sync_running:
+            try:
+                sync_log = ROOT / "price_sync.log"
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "src.main", "--trigger=manual"],
+                    cwd=str(ROOT),
+                    env=_subprocess_env(),
+                    stdout=open(sync_log, "w"),
+                    stderr=subprocess.STDOUT,
+                )
+                with col_out:
+                    st.info(f"**Sync started** (PID {proc.pid})  ·  log: `{sync_log}`")
+            except Exception as exc:
+                st.error(f"Failed to start sync: {exc}")
+
+    _sync_progress_fragment()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Price sync log table ──────────────────────────────────────────
+    st.markdown('<div class="slabel">Price sync log</div>', unsafe_allow_html=True)
+
+    if psl.empty:
+        st.info("No price sync log data yet. The log is populated on each sync run.")
+    else:
+        # Filters
+        fa, fb, fc = st.columns(3)
+        with fa:
+            sup_opts_psl = ["All suppliers"] + sorted(
+                psl["supplier"].dropna().unique().tolist()
+                if "supplier" in psl.columns else []
+            )
+            psl_sup = st.selectbox("Supplier", sup_opts_psl, key="psl_s",
+                                    format_func=lambda x: SUPPLIER_LABELS.get(x, x))
+        with fb:
+            dir_opts = ["All", "increase", "decrease", "unchanged", "new"]
+            psl_dir = st.selectbox("Direction", dir_opts, key="psl_d")
+        with fc:
+            app_opts = ["All", "Applied", "Skipped / Not applied"]
+            psl_app = st.selectbox("Status", app_opts, key="psl_a")
+
+        fd, fe = st.columns(2)
+        with fd:
+            days_psl = st.selectbox("Period", [1, 7, 14, 30], key="psl_p",
+                                     format_func=lambda x: f"Last {x} day{'s' if x>1 else ''}")
+        with fe:
+            psl_q = st.text_input("Search SKU / product", placeholder="MD60F …", key="psl_q")
+
+        # Apply filters
+        psl_f = psl.copy()
+        if "_ts" not in psl_f.columns:
+            psl_f["_ts"] = pd.to_datetime(psl_f.get("timestamp", pd.Series()), errors="coerce")
+
+        cutoff_psl = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days_psl)
+        msk_psl = psl_f["_ts"].dt.tz_localize("UTC", ambiguous="NaT", nonexistent="NaT").fillna(
+            psl_f["_ts"]
+        ) >= cutoff_psl
+
+        if psl_sup != "All suppliers" and "supplier" in psl_f.columns:
+            msk_psl &= psl_f["supplier"] == psl_sup
+        if psl_dir != "All" and "direction" in psl_f.columns:
+            msk_psl &= psl_f["direction"].astype(str).str.lower() == psl_dir
+        if psl_app == "Applied" and "applied" in psl_f.columns:
+            msk_psl &= psl_f["applied"].astype(str).str.lower() == "true"
+        elif psl_app == "Skipped / Not applied" and "applied" in psl_f.columns:
+            msk_psl &= psl_f["applied"].astype(str).str.lower() == "false"
+        if psl_q and "sku" in psl_f.columns:
+            sq_lower = psl_q.lower()
+            msk_psl &= (
+                psl_f["sku"].astype(str).str.lower().str.contains(sq_lower, na=False) |
+                psl_f.get("product_name", pd.Series("", index=psl_f.index)).astype(str).str.lower().str.contains(sq_lower, na=False)
+            )
+
+        psl_filtered = psl_f[msk_psl].copy()
+
+        if psl_filtered.empty:
+            st.markdown(f"""
+            <div class="card" style="text-align:center;padding:24px;margin-top:8px">
+              <div style="color:{T3};font-size:.83rem">No log entries match these filters</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # Select display columns
+            disp_cols = [c for c in [
+                "timestamp", "sku", "product_name",
+                "old_supplier_price", "new_supplier_price", "pct_change",
+                "direction", "applied", "skip_reason",
+            ] if c in psl_filtered.columns]
+
+            disp_psl = psl_filtered[disp_cols].copy()
+            if "timestamp" in disp_psl.columns:
+                disp_psl["timestamp"] = pd.to_datetime(
+                    disp_psl["timestamp"], errors="coerce"
+                ).dt.strftime("%d %b %Y  %H:%M")
+            disp_psl = disp_psl.sort_values("timestamp", ascending=False) if "timestamp" in disp_psl.columns else disp_psl
+
+            def _psl_row_style(row):
+                s = [""] * len(row)
+                idx = list(row.index)
+                applied_val = str(row.get("applied", "")).lower()
+                skip_reason = str(row.get("skip_reason", "")).lower()
+
+                if applied_val == "false":
+                    # Errors (alerts) → red tint; skipped (threshold / unchanged) → amber tint
+                    bg = f"background-color:rgba(240,92,110,.08)" if "alert" in skip_reason else f"background-color:rgba(240,168,74,.07)"
+                    s = [bg] * len(s)
+
+                # Colour the applied cell itself
+                if "applied" in idx:
+                    ai = idx.index("applied")
+                    if applied_val == "true":
+                        s[ai] = f"color:{G};font-weight:600"
+                    else:
+                        colour = RED if "alert" in skip_reason else AMBER
+                        s[ai] = f"color:{colour};font-weight:600"
+
+                # Colour pct_change cell
+                if "pct_change" in idx:
+                    pi = idx.index("pct_change")
+                    pct_str = str(row.get("pct_change", ""))
+                    if pct_str.startswith("+") or (pct_str and pct_str[0].isdigit() and float(pct_str.replace("%","") or 0) > 0):
+                        s[pi] = f"color:{RED};font-family:{MONO};font-size:.78rem"
+                    elif pct_str.startswith("-"):
+                        s[pi] = f"color:{G};font-family:{MONO};font-size:.78rem"
+                    else:
+                        s[pi] = f"font-family:{MONO};font-size:.78rem"
+
+                return s
+
+            st.dataframe(
+                disp_psl.style.apply(_psl_row_style, axis=1).set_properties(
+                    **{"background-color": C1, "color": T1, "font-size": "0.81rem"}
+                ),
+                use_container_width=True,
+                height=480,
+                hide_index=True,
+            )
+            st.caption(
+                f"{len(psl_filtered):,} entries shown  ·  "
+                f"green = applied  ·  amber = skipped (below threshold or unchanged)  ·  red = held for review"
+            )
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and decode entities from a string."""
+    import re, html
+    clean = re.sub(r"<[^>]+>", " ", str(text))
+    clean = html.unescape(clean)
+    return " ".join(clean.split())   # collapse whitespace
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 7 — Competitor Analysis
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with t7:
+    cal = comp_analysis_log.copy() if not comp_analysis_log.empty else pd.DataFrame()
+
+    # ── Summary KPIs ──────────────────────────────────────────────────
+    st.markdown('<div class="slabel">Last run summary</div>', unsafe_allow_html=True)
+
+    if not cal.empty and "timestamp" in cal.columns:
+        cal["_ts"] = pd.to_datetime(cal["timestamp"], errors="coerce")
+        last_cal_ts   = cal["_ts"].dropna().max()
+        last_cal_rows = cal[cal["_ts"] == last_cal_ts] if pd.notna(last_cal_ts) else cal.head(0)
+        last_cal_str  = last_cal_ts.strftime("%d %b %Y  %H:%M UTC") if pd.notna(last_cal_ts) else "—"
+
+        def _count_status(df, *statuses):
+            if "status" not in df.columns:
+                return 0
+            return int(df["status"].isin(list(statuses)).sum())
+
+        n_analysed   = len(last_cal_rows)
+        n_pending    = _count_status(last_cal_rows, "PENDING_REVIEW", "MARGIN_FLOOR_HIT")
+        n_comp       = _count_status(last_cal_rows, "ALREADY_COMPETITIVE")
+        n_no_match   = _count_status(last_cal_rows, "NO_MATCH_FOUND", "SCRAPE_FAILED")
+
+        # discrepancies: rows where cfsa > cheapest_competitor
+        n_disc = 0
+        if "discrepancy_rand" in last_cal_rows.columns:
+            n_disc = (
+                pd.to_numeric(last_cal_rows["discrepancy_rand"], errors="coerce")
+                .fillna(0) > 0
+            ).sum()
+    else:
+        last_cal_str = "No runs yet"
+        n_analysed = n_pending = n_comp = n_no_match = n_disc = 0
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Last Run",           last_cal_str)
+    m2.metric("Analysed",           n_analysed)
+    m3.metric("Discrepancies",      n_disc,    help="CFSA price > cheapest competitor")
+    m4.metric("Pending Review",     n_pending, help="Needs human approval before Shopify update")
+    m5.metric("Already Competitive",n_comp)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Manual trigger ────────────────────────────────────────────────
+    st.markdown('<div class="slabel">Manual trigger</div>', unsafe_allow_html=True)
+
+    _ca_running, _ca_status = _is_running("competitor_analysis")
+
+    cb_btn, cb_out = st.columns([2, 5])
+    with cb_btn:
+        if st.button(
+            "⏸ Running…" if _ca_running else "▶ Run Analysis Now",
+            use_container_width=True,
+            key="ca_trigger",
+            disabled=_ca_running,
+        ) and not _ca_running:
+            try:
+                log_file = ROOT / "competitor_analysis.log"
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "scrapers.competitor_analysis.main"],
+                    cwd=str(ROOT),
+                    env=_subprocess_env(),
+                    stdout=open(log_file, "w"),
+                    stderr=subprocess.STDOUT,
+                )
+                with cb_out:
+                    st.info(
+                        f"**Analysis started** (PID {proc.pid}) — typically 5–10 min  \n"
+                        f"Log: `{log_file}`"
+                    )
+            except Exception as exc:
+                st.error(f"Failed to start analysis: {exc}")
+
+    _ca_progress_fragment()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Helper: write-capable gspread client ──────────────────────────
+    def _write_gspread():
+        if "gcp_service_account" in st.secrets:
+            creds = Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]),
+                scopes=WRITE_SCOPES,
+            )
+        else:
+            creds = Credentials.from_service_account_file(str(SA_KEY), scopes=WRITE_SCOPES)
+        return gspread.authorize(creds)
+
+    def _shopify_client():
+        """Lazy-load ShopifyClient from repo src — only called on approval."""
+        from src.shopify_client import ShopifyClient
+        domain = st.secrets.get("shopify_shop_domain", "") or os.getenv("SHOPIFY_SHOP_DOMAIN", "")
+        token  = st.secrets.get("shopify_access_token", "") or os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+        if not domain or not token:
+            return None
+        return ShopifyClient(shop_domain=domain, access_token=token)
+
+    # ── Pending Review table ──────────────────────────────────────────
+    st.markdown('<div class="slabel">Pending review</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"<p style='color:{T3};font-size:.82rem;margin-bottom:16px'>"
+        "These products have a competitor price lower than CFSA. "
+        "Review the AI suggested price, adjust if needed, then Approve or Reject.</p>",
+        unsafe_allow_html=True,
+    )
+
+    # Determine whether the most recent run has any usable price data
+    _last_run_all_failed = False
+    if not cal.empty and "status" in cal.columns and "_ts" in cal.columns:
+        _last_run_rows = cal[cal["_ts"] == cal["_ts"].dropna().max()] if cal["_ts"].dropna().any() else cal.head(0)
+        if not _last_run_rows.empty:
+            _has_price = (
+                pd.to_numeric(_last_run_rows.get("cheapest_competitor", pd.Series([], dtype=str)), errors="coerce")
+                .notna()
+                .any()
+            )
+            _last_run_all_failed = not _has_price
+
+    if cal.empty or "status" not in cal.columns:
+        st.markdown(f"""
+        <div class="card" style="text-align:center;padding:28px">
+          <div style="font-size:1.2rem;margin-bottom:8px">📭</div>
+          <div style="color:{T2};font-weight:600;margin-bottom:6px">No competitor analysis data yet</div>
+          <div style="color:{T3};font-size:.85rem">Click <b>Run Analysis Now</b> above to scrape competitor prices for the first time.</div>
+        </div>""", unsafe_allow_html=True)
+    elif _last_run_all_failed:
+        st.markdown(f"""
+        <div class="card" style="text-align:center;padding:28px;border-color:{RED}33">
+          <div style="font-size:1.2rem;margin-bottom:8px">⚠️</div>
+          <div style="color:{RED};font-weight:600;margin-bottom:6px">Last run returned no competitor prices</div>
+          <div style="color:{T3};font-size:.85rem">
+            All scrapes failed or no fuzzy matches exceeded the threshold.<br>
+            Check network access, Playwright installation, and whether competitor sites are reachable.<br>
+            The data below (if any) is from a previous run.
+          </div>
+        </div>""", unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    if not cal.empty and "status" in cal.columns:
+        # Use only the MOST RECENT row per SKU — without this, every historical
+        # run appears as a duplicate pending card (one per SKU per run).
+        # If a SKU's latest status is no longer PENDING/MARGIN_FLOOR, it drops out.
+        cal_latest = cal.copy()
+        if "_ts" in cal_latest.columns and "sku" in cal_latest.columns:
+            cal_latest = (
+                cal_latest.sort_values("_ts", ascending=False)
+                          .drop_duplicates(subset=["sku"], keep="first")
+            )
+        pending_df = cal_latest[
+            cal_latest["status"].isin(["PENDING_REVIEW", "MARGIN_FLOOR_HIT"])
+        ].copy()
+
+        # ── Global warning for products missing cost data ─────────────
+        # The margin floor in the pricer can only enforce a minimum if cost
+        # is known. When cost is empty, suggested prices could theoretically
+        # be set below true wholesale — surface this to the operator so they
+        # know to populate cost (in master) before approving.
+        if not pending_df.empty and "cost_price" in pending_df.columns:
+            no_cost = pending_df["cost_price"].astype(str).str.strip().eq("")
+            n_missing_cost = int(no_cost.sum())
+            if n_missing_cost > 0:
+                st.markdown(
+                    f"<div style='background:rgba(255,170,0,.08);border:1px solid {AMBER};"
+                    f"border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem'>"
+                    f"<b style='color:{AMBER}'>⚠ {n_missing_cost} of {len(pending_df)} pending "
+                    f"products lack wholesale cost data.</b> "
+                    f"<span style='color:{T3}'>Margin cannot be calculated and the margin "
+                    f"floor is not enforced. Add <code>cost_inc</code> in the master sheet "
+                    f"(or via the Suppliers tab) before approving these prices.</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        if pending_df.empty:
+            st.markdown(f"""
+            <div class="card" style="text-align:center;padding:28px;border-color:{G_10}">
+              <div style="font-size:1.2rem;margin-bottom:6px">✅</div>
+              <div style="color:{T2}">No items pending review</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # Show most recent run first, then by discrepancy descending
+            if "_ts" in pending_df.columns:
+                pending_df = pending_df.sort_values(["_ts", "discrepancy_rand"], ascending=[False, False])
+
+            for _, row in pending_df.iterrows():
+                sku           = str(row.get("sku", ""))
+                product_name  = _strip_html(str(row.get("product_name", "")))
+                cfsa_price    = row.get("cfsa_current_price", "")
+                cost_price    = row.get("cost_price", "")
+                margin        = row.get("margin_pct", "")
+                ai_suggested  = row.get("ai_suggested_price", "")
+                disc_raw      = row.get("discrepancy_rand", "")
+                status_val    = str(row.get("status", ""))
+                run_id        = str(row.get("run_id", ""))
+                variant_id    = str(row.get("shopify_variant_id", "")) if "shopify_variant_id" in row else ""
+
+                # Discrepancy colour
+                try:
+                    disc_val = float(str(disc_raw).replace(",", ""))
+                    disc_colour = RED if disc_val > 500 else (AMBER if disc_val > 100 else G)
+                    disc_str = f"R{disc_val:,.2f}"
+                except (ValueError, TypeError):
+                    disc_colour = T3
+                    disc_str = "—"
+
+                floor_badge = (
+                    "<span class='badge' style='background:rgba(240,168,74,.1);"
+                    f"color:{AMBER};border:1px solid rgba(240,168,74,.2);margin-left:8px'>"
+                    "MARGIN FLOOR</span>"
+                    if status_val == "MARGIN_FLOOR_HIT" else ""
+                )
+
+                row_key = f"{run_id}_{sku}"
+
+                with st.container():
+                    # ── Card header ──────────────────────────────────────
+                    col_info, col_disc = st.columns([3, 1])
+                    with col_info:
+                        st.markdown(
+                            f"<div style='font-family:{MONO};font-size:.95rem;font-weight:600;"
+                            f"color:{T1}'>{sku}{floor_badge}</div>"
+                            f"<div style='font-size:.82rem;color:{T2};margin-top:2px;"
+                            f"margin-bottom:6px'>{product_name}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with col_disc:
+                        st.markdown(
+                            f"<div style='text-align:right'>"
+                            f"<div style='font-size:.62rem;color:{T3};text-transform:uppercase;"
+                            f"letter-spacing:.08em'>Discrepancy</div>"
+                            f"<div style='font-size:1.05rem;font-weight:700;font-family:{MONO};"
+                            f"color:{disc_colour}'>{disc_str}</div></div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    # ── Competitor price chips ────────────────────────────
+                    chip_cols = st.columns(len(COMPETITORS))
+                    for ci, comp in enumerate(COMPETITORS):
+                        col_key = f"{comp['name']}_price"
+                        val = str(row.get(col_key, "")) if col_key in row.index else ""
+                        price_str = f"R{val}" if val else "—"
+                        price_colour = G if val else T3
+                        with chip_cols[ci]:
+                            st.markdown(
+                                f"<div style='background:{C2};border-radius:6px;padding:5px 8px;"
+                                f"text-align:center'>"
+                                f"<div style='font-size:.6rem;color:{T3};text-transform:uppercase;"
+                                f"letter-spacing:.06em;margin-bottom:2px'>{COMP_DISPLAY[comp['name']]}</div>"
+                                f"<div style='font-family:{MONO};font-size:.8rem;font-weight:600;"
+                                f"color:{price_colour}'>{price_str}</div></div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    # ── Price summary row ─────────────────────────────────
+                    # When cost is missing, render an amber warning instead of "—"
+                    # so the operator knows this is a data gap (not just zero/empty)
+                    # — margin floor cannot be enforced without it.
+                    if cost_price:
+                        cost_html = (
+                            f"<span>Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>"
+                            f"R{cost_price}</b></span>"
+                        )
+                    else:
+                        cost_html = (
+                            f"<span title='Wholesale cost not stored in master sheet — "
+                            f"margin floor cannot be enforced for this product.' "
+                            f"style='color:{AMBER}'>"
+                            f"⚠ Cost not in master</span>"
+                        )
+
+                    if margin:
+                        margin_html = f"<span>Margin&nbsp;<b style='color:{T1}'>{margin}</b></span>"
+                    else:
+                        margin_html = (
+                            f"<span style='color:{AMBER}'>Margin unknown</span>"
+                        )
+
+                    st.markdown(
+                        f"<div style='display:flex;gap:24px;font-size:.75rem;color:{T2};"
+                        f"margin-top:8px;margin-bottom:4px;padding:8px 0;"
+                        f"border-top:1px solid {BDR}'>"
+                        f"<span>CFSA&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cfsa_price}</b></span>"
+                        f"{cost_html}{margin_html}"
+                        f"<span>AI Suggested&nbsp;<b style='color:{G};font-family:{MONO}'>"
+                        f"{'R'+str(ai_suggested) if ai_suggested else '—'}</b></span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"<div style='height:1px;background:{BDR};margin-bottom:8px'></div>",
+                                unsafe_allow_html=True)
+
+                    col_inp, col_approve, col_reject = st.columns([3, 1, 1])
+                    with col_inp:
+                        try:
+                            default_val = float(str(ai_suggested).replace(",", "")) if ai_suggested else 0.0
+                        except ValueError:
+                            default_val = 0.0
+                        override = st.number_input(
+                            "Override price (R)",
+                            value=default_val,
+                            min_value=0.0,
+                            step=10.0,
+                            format="%.2f",
+                            key=f"ca_override_{row_key}",
+                            label_visibility="collapsed",
+                        )
+                    with col_approve:
+                        if st.button("✓ Approve", key=f"ca_approve_{row_key}", use_container_width=True):
+                            # ── Approval guardrails ─────────────────────────
+                            # Catch obvious mistakes BEFORE we write to Shopify:
+                            #   1. Price must be a positive finite number
+                            #   2. Price must be within a sane range relative to CFSA's current price
+                            #      (catches typos like 70990 instead of 7099)
+                            #   3. Variant ID, if present, must look like a Shopify ID (digits only)
+                            try:
+                                cfsa_p = float(row.get("cfsa_current_price", 0) or 0)
+                            except (TypeError, ValueError):
+                                cfsa_p = 0.0
+                            err: Optional[str] = None
+                            if override <= 0:
+                                err = "Override price must be greater than 0"
+                            elif override > 1_000_000:
+                                err = f"Override R{override:,.2f} looks like a typo — refusing to push"
+                            elif cfsa_p > 0 and (override > cfsa_p * 3 or override < cfsa_p * 0.3):
+                                err = (
+                                    f"Override R{override:,.2f} is wildly off CFSA price R{cfsa_p:,.2f}. "
+                                    "If this is intentional, change the CFSA price manually in Shopify first."
+                                )
+                            elif variant_id and not variant_id.isdigit():
+                                err = f"Stored variant ID '{variant_id}' doesn't look like a Shopify ID (digits only). Refusing to push."
+                            if err:
+                                st.error(f"✗ {err}")
+                                st.stop()
+                            try:
+                                gc_write = _write_gspread()
+                                sh_write = gc_write.open_by_key(SPREADSHEET_ID)
+                                ws_write = sh_write.worksheet("competitor_analysis_log")
+
+                                # Find row and update
+                                all_vals = ws_write.get_all_values()
+                                header_w = all_vals[0] if all_vals else []
+                                run_col  = header_w.index("run_id") if "run_id" in header_w else -1
+                                sku_col_w= header_w.index("sku")    if "sku"    in header_w else -1
+                                now_iso  = datetime.now(timezone.utc).isoformat()
+
+                                for i, r in enumerate(all_vals[1:], start=2):
+                                    if (run_col >= 0 and len(r) > run_col and r[run_col] == run_id
+                                            and sku_col_w >= 0 and len(r) > sku_col_w and r[sku_col_w] == sku):
+                                        updates = []
+                                        for col_name, val in [
+                                            ("human_override_price", f"{override:.2f}"),
+                                            ("status", "APPROVED"),
+                                            ("approved_by", "Brent"),
+                                            ("applied_at", now_iso),
+                                        ]:
+                                            if col_name in header_w:
+                                                ci = header_w.index(col_name)
+                                                updates.append(gspread.Cell(i, ci + 1, val))
+                                        if updates:
+                                            ws_write.update_cells(updates, value_input_option="USER_ENTERED")
+                                        break
+
+                                # Push to Shopify if variant ID available
+                                if variant_id:
+                                    shopify = _shopify_client()
+                                    if shopify and override > 0:
+                                        shopify.update_variant_price(variant_id, override)
+                                        st.success(f"✓ {sku} approved at R{override:,.2f} and pushed to Shopify")
+                                    else:
+                                        st.warning(f"✓ {sku} approved in sheet but Shopify credentials not configured")
+                                else:
+                                    st.success(f"✓ {sku} approved at R{override:,.2f} (no Shopify variant linked)")
+
+                                st.cache_data.clear()
+                            except Exception as exc:
+                                st.error(f"Approval failed: {exc}")
+
+                    with col_reject:
+                        if st.button("✕ Reject", key=f"ca_reject_{row_key}", use_container_width=True):
+                            try:
+                                gc_write = _write_gspread()
+                                sh_write = gc_write.open_by_key(SPREADSHEET_ID)
+                                ws_write = sh_write.worksheet("competitor_analysis_log")
+                                all_vals = ws_write.get_all_values()
+                                header_w = all_vals[0] if all_vals else []
+                                run_col  = header_w.index("run_id") if "run_id" in header_w else -1
+                                sku_col_w= header_w.index("sku")    if "sku"    in header_w else -1
+                                now_iso  = datetime.now(timezone.utc).isoformat()
+
+                                for i, r in enumerate(all_vals[1:], start=2):
+                                    if (run_col >= 0 and len(r) > run_col and r[run_col] == run_id
+                                            and sku_col_w >= 0 and len(r) > sku_col_w and r[sku_col_w] == sku):
+                                        updates = []
+                                        for col_name, val in [
+                                            ("status", "REJECTED"),
+                                            ("approved_by", "Brent"),
+                                            ("applied_at", now_iso),
+                                        ]:
+                                            if col_name in header_w:
+                                                ci = header_w.index(col_name)
+                                                updates.append(gspread.Cell(i, ci + 1, val))
+                                        if updates:
+                                            ws_write.update_cells(updates, value_input_option="USER_ENTERED")
+                                        break
+
+                                st.info(f"✕ {sku} rejected — no Shopify update made")
+                                st.cache_data.clear()
+                            except Exception as exc:
+                                st.error(f"Rejection failed: {exc}")
+
+                st.markdown("<div style='margin-bottom:4px'></div>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── All Results table ─────────────────────────────────────────────
+    st.markdown('<div class="slabel">All results — full history</div>', unsafe_allow_html=True)
+
+    if cal.empty:
+        st.info("No competitor analysis history yet.")
+    else:
+        # Filters
+        fa, fb, fc = st.columns(3)
+        with fa:
+            status_opts = ["All statuses"] + sorted(cal["status"].dropna().unique().tolist()) if "status" in cal.columns else ["All statuses"]
+            cal_status  = st.selectbox("Status", status_opts, key="cal_st")
+        with fb:
+            days_cal = st.selectbox("Period", [1, 7, 30, 90], key="cal_d",
+                                     format_func=lambda x: f"Last {x} day{'s' if x>1 else ''}")
+        with fc:
+            cal_q = st.text_input("Search SKU", placeholder="MD60F …", key="cal_q")
+
+        cal_f = cal.copy()
+        if "_ts" not in cal_f.columns:
+            cal_f["_ts"] = pd.to_datetime(cal_f.get("timestamp", pd.Series()), errors="coerce")
+        cutoff_cal = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days_cal)
+
+        try:
+            ts_aware = cal_f["_ts"].dt.tz_localize("UTC", ambiguous="NaT", nonexistent="NaT")
+        except Exception:
+            ts_aware = cal_f["_ts"]
+
+        msk_cal = ts_aware.fillna(pd.NaT) >= cutoff_cal
+        if cal_status != "All statuses" and "status" in cal_f.columns:
+            msk_cal &= cal_f["status"] == cal_status
+        if cal_q and "sku" in cal_f.columns:
+            msk_cal &= cal_f["sku"].astype(str).str.lower().str.contains(cal_q.lower(), na=False)
+
+        cal_filtered = cal_f[msk_cal].copy()
+
+        if cal_filtered.empty:
+            st.markdown(f"""
+            <div class="card" style="text-align:center;padding:24px">
+              <div style="color:{T3};font-size:.83rem">No results match these filters</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # Columns to show in the table
+            all_cols = (
+                ["timestamp", "sku", "product_name", "cfsa_current_price",
+                 "cost_price", "margin_pct"]
+                + COMP_PRICE_COLS
+                + ["cheapest_competitor", "cheapest_source", "discrepancy_rand",
+                   "ai_suggested_price", "human_override_price", "status"]
+            )
+            show_cols = [c for c in all_cols if c in cal_filtered.columns]
+            cal_display = cal_filtered[show_cols].copy()
+            if "timestamp" in cal_display.columns:
+                cal_display["timestamp"] = pd.to_datetime(
+                    cal_display["timestamp"], errors="coerce"
+                ).dt.strftime("%d %b %Y  %H:%M")
+            cal_display = cal_display.sort_values("timestamp", ascending=False) if "timestamp" in cal_display.columns else cal_display
+
+            # Rename competitor price cols for display
+            rename_map = {f"{c['name']}_price": c.get("display_name", c["name"]) for c in COMPETITORS}
+            cal_display.rename(columns=rename_map, inplace=True)
+
+            def _cal_row_style(row):
+                s = [""] * len(row)
+                idx = list(row.index)
+                status_v = str(row.get("status", ""))
+                if status_v in ("PENDING_REVIEW", "MARGIN_FLOOR_HIT"):
+                    s = [f"background-color:rgba(240,168,74,.07)"] * len(s)
+                elif status_v == "APPROVED":
+                    s = [f"background-color:rgba(0,232,122,.05)"] * len(s)
+                elif status_v == "REJECTED":
+                    s = [f"background-color:rgba(240,92,110,.06)"] * len(s)
+                if "status" in idx:
+                    si = idx.index("status")
+                    colour_map = {
+                        "PENDING_REVIEW": AMBER, "MARGIN_FLOOR_HIT": AMBER,
+                        "APPROVED": G, "ALREADY_COMPETITIVE": G,
+                        "REJECTED": RED, "SCRAPE_FAILED": RED,
+                        "NO_MATCH_FOUND": T3,
+                    }
+                    s[si] = f"color:{colour_map.get(status_v, T2)};font-weight:600"
+                if "discrepancy_rand" in idx:
+                    di = idx.index("discrepancy_rand")
+                    try:
+                        dv = float(str(row.get("discrepancy_rand", "")).replace(",", ""))
+                        col = RED if dv > 500 else (AMBER if dv > 100 else (G if dv < 0 else T2))
+                        s[di] = f"color:{col};font-family:{MONO};font-size:.78rem"
+                    except (ValueError, TypeError):
+                        pass
+                return s
+
+            st.dataframe(
+                cal_display.style.apply(_cal_row_style, axis=1).set_properties(
+                    **{"background-color": C1, "color": T1, "font-size": "0.8rem"}
+                ),
+                use_container_width=True,
+                height=480,
+                hide_index=True,
+            )
+            st.caption(
+                f"{len(cal_filtered):,} entries  ·  "
+                f"amber = pending review  ·  green = approved / competitive  ·  red = rejected / failed"
+            )
 
 
 # ─────────────────────────────────────────────────────────────

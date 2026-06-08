@@ -19,6 +19,7 @@ from typing import Optional
 
 import pandas as pd
 
+from .automation_status import StatusWriter
 from .config_loader import SupplierConfig, load_all_supplier_configs, load_app_config
 from .diff_engine import DiffResult, compute_diff
 from .email_poller import GmailPoller
@@ -47,6 +48,8 @@ def main(
     # 1. Load supplier configs
     # ------------------------------------------------------------------ #
     configs = load_all_supplier_configs()
+    sw = StatusWriter("price_sync", total=len(configs))
+    sw.__enter__()
     if supplier_filter:
         configs = {k: v for k, v in configs.items() if k == supplier_filter}
         if not configs:
@@ -189,6 +192,7 @@ def main(
     # ------------------------------------------------------------------ #
     alert_cfg = app_cfg.get("alerts", {})
     price_alert_threshold = alert_cfg.get("price_change_threshold_pct", 15.0)
+    increase_threshold_pct = app_cfg.get("pricing", {}).get("increase_threshold_pct", 2.0)
     shopify_write_cap = app_cfg.get("sync", {}).get("shopify_write_cap", 500)
     # location_id already resolved from env/config above in the init block
 
@@ -196,10 +200,11 @@ def main(
     error_flag_rows: list[dict] = []
     run_summary: dict[str, dict] = {}
 
-    for key, incoming_df in supplier_data.items():
+    for _sup_idx, (key, incoming_df) in enumerate(supplier_data.items()):
         cfg = configs[key]
         t0 = time.time()
         log.info("[%s] Processing %d normalized rows", key, len(incoming_df))
+        sw.tick(done=_sup_idx, current=key, stage=f"Processing {key} ({_sup_idx+1}/{len(supplier_data)})")
 
         # Diff
         diff: DiffResult = compute_diff(
@@ -207,11 +212,13 @@ def main(
             master=master_df,
             supplier=key,
             price_alert_threshold_pct=price_alert_threshold,
+            increase_threshold_pct=increase_threshold_pct,
         )
         all_alerts.extend(diff.alerts)
 
         rows_written = 0
         shopify_failed: list[dict] = []
+        synced_at = datetime.now(timezone.utc).isoformat()
 
         if not dry_run and diff.has_changes:
             # Write new + changed rows to master sheet
@@ -271,7 +278,6 @@ def main(
                 )
 
                 # Update shopify_last_synced timestamp in master
-                synced_at = datetime.now(timezone.utc).isoformat()
                 for row in shopify_rows:
                     if row.get("sku"):
                         sheets.update_shopify_sync_timestamp(
@@ -283,6 +289,23 @@ def main(
                 "[%s] DRY RUN — would write %d rows, sync %d to Shopify",
                 key, diff.total_changes, diff.total_changes,
             )
+
+        # ── Build price_sync_log entries for every processed product ─────
+        # We log ALL rows (new, changed, skipped, unchanged) so the dashboard
+        # provides a complete per-run audit trail.
+        if not dry_run:
+            sync_log_rows = _build_sync_log_rows(
+                supplier=key,
+                diff=diff,
+                incoming_df=incoming_df,
+                master_df=master_df,
+                synced_at=synced_at if not dry_run else "",
+            )
+            if sync_log_rows:
+                try:
+                    sheets.append_price_sync_log(sync_log_rows)
+                except Exception as exc:
+                    log.warning("[%s] price_sync_log write failed (non-fatal): %s", key, exc)
 
         # ── Purge stale rows after any scrape run ────────────────────────
         # When data comes from a live scrape (not an email attachment), the
@@ -364,11 +387,39 @@ def main(
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
+        # Count applied increases vs decreases for Obsidian/reporting
+        master_by_sku_for_counts = (
+            master_df[master_df["supplier"] == key].set_index("sku")
+            if not master_df.empty else pd.DataFrame()
+        )
+        inc_applied = dec_applied = 0
+        if not diff.changed_rows.empty:
+            for _, _cr in diff.changed_rows.iterrows():
+                if _cr.get("_price_alerted", False):
+                    continue
+                _sku = str(_cr.get("sku", ""))
+                _old = (
+                    master_by_sku_for_counts.loc[_sku]["selling_price"]
+                    if _sku in master_by_sku_for_counts.index else None
+                )
+                _new = _cr.get("selling_price")
+                try:
+                    if _old is not None and _new is not None:
+                        if float(_new) > float(_old):
+                            inc_applied += 1
+                        elif float(_new) < float(_old):
+                            dec_applied += 1
+                except (TypeError, ValueError):
+                    pass
+
         run_summary[key] = {
             "parsed": len(incoming_df),
             "new": len(diff.new_rows),
             "changed": len(diff.changed_rows),
             "unchanged": diff.unchanged_count,
+            "skipped": len(diff.skipped_rows),
+            "increases_applied": inc_applied,
+            "decreases_applied": dec_applied,
             "errors": len(shopify_failed),
             "alerts": len(diff.alerts),
         }
@@ -393,6 +444,20 @@ def main(
             log.warning("Shopify variant backfill failed (non-fatal): %s", exc)
 
     # ------------------------------------------------------------------ #
+    # 6b. Rebuild the denormalized `suppliers` tab (Jarvis-readable view)
+    # ------------------------------------------------------------------ #
+    # After every supplier sync we refresh the per-supplier catalog so the
+    # dashboard + any future agents always see current cost / stock / live
+    # status grouped by supplier. Non-fatal if it fails — master is the
+    # source of truth.
+    if not dry_run:
+        try:
+            n_rows = sheets.rebuild_suppliers_view()
+            log.info("Suppliers view rebuilt: %d product rows", n_rows)
+        except Exception as exc:
+            log.warning("Suppliers view rebuild failed (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------ #
     # 7. Write error flags to sheet + send alert email if needed
     # ------------------------------------------------------------------ #
     if error_flag_rows and not dry_run:
@@ -410,7 +475,14 @@ def main(
         )
 
     # ------------------------------------------------------------------ #
-    # 8. Finish
+    # 8. Obsidian log (silent if vault_path not configured)
+    # ------------------------------------------------------------------ #
+    obsidian_vault = app_cfg.get("obsidian", {}).get("vault_path", "")
+    if obsidian_vault:
+        _write_obsidian_log(obsidian_vault, run_summary)
+
+    # ------------------------------------------------------------------ #
+    # 9. Finish
     # ------------------------------------------------------------------ #
     total_duration = round(time.time() - start_time, 2)
     log.info(
@@ -421,6 +493,7 @@ def main(
         status="success" if not error_flag_rows else "partial",
         summary={**run_summary, "total_duration_seconds": total_duration},
     )
+    sw.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +626,186 @@ def _get_secret_or_env(secret_name: str, sa_file: Optional[str] = None) -> str:
         raise RuntimeError(
             f"Secret {secret_name!r} not in env and Secret Manager failed: {e}"
         ) from e
+
+
+# ---------------------------------------------------------------------------
+# Price sync log builder
+# ---------------------------------------------------------------------------
+
+def _build_sync_log_rows(
+    supplier: str,
+    diff: "DiffResult",
+    incoming_df: "pd.DataFrame",
+    master_df: "pd.DataFrame",
+    synced_at: str,
+) -> list[dict]:
+    """
+    Build a list of price_sync_log dicts for every product processed in one
+    supplier run — new, changed, skipped (below threshold), and unchanged.
+    """
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    master_by_sku = (
+        master_df[master_df["supplier"] == supplier].set_index("sku")
+        if not master_df.empty else pd.DataFrame()
+    )
+    incoming_by_sku = (
+        incoming_df.set_index("sku")
+        if not incoming_df.empty and "sku" in incoming_df.columns
+        else pd.DataFrame()
+    )
+
+    def _fmt_price(val) -> str:
+        try:
+            return f"{float(val):.2f}" if val is not None and val != "" else ""
+        except (TypeError, ValueError):
+            return str(val) if val is not None else ""
+
+    rows: list[dict] = []
+
+    # ── New products ──────────────────────────────────────────────────
+    if not diff.new_rows.empty:
+        for _, row in diff.new_rows.iterrows():
+            rows.append({
+                "timestamp": now_str,
+                "sku": str(row.get("sku", "")),
+                "product_name": str(row.get("description", "") or ""),
+                "old_supplier_price": "",
+                "new_supplier_price": _fmt_price(row.get("selling_price")),
+                "pct_change": "",
+                "direction": "new",
+                "applied": "true",
+                "skip_reason": "",
+                "shopify_updated_at": synced_at if row.get("shopify_variant_id") else "",
+            })
+
+    # ── Changed rows (incl. alerted) ─────────────────────────────────
+    if not diff.changed_rows.empty:
+        for _, row in diff.changed_rows.iterrows():
+            sku = str(row.get("sku", ""))
+            old_p = (
+                master_by_sku.loc[sku]["selling_price"]
+                if sku in master_by_sku.index else None
+            )
+            new_p = row.get("selling_price")
+            alerted = bool(row.get("_price_alerted", False))
+
+            try:
+                old_f = float(old_p) if old_p is not None and old_p != "" else None
+                new_f = float(new_p) if new_p is not None and new_p != "" else None
+                if old_f is not None and new_f is not None and old_f != 0:
+                    pct = (new_f - old_f) / old_f * 100
+                    pct_str = f"{pct:+.1f}%"
+                    direction = "increase" if pct > 0 else ("decrease" if pct < 0 else "unchanged")
+                else:
+                    pct_str = ""
+                    direction = ""
+            except (TypeError, ValueError):
+                pct_str = ""
+                direction = ""
+
+            rows.append({
+                "timestamp": now_str,
+                "sku": sku,
+                "product_name": str(row.get("description", "") or ""),
+                "old_supplier_price": _fmt_price(old_p),
+                "new_supplier_price": _fmt_price(new_p),
+                "pct_change": pct_str,
+                "direction": direction,
+                "applied": "false" if alerted else "true",
+                "skip_reason": "Price alert flagged for review" if alerted else "",
+                "shopify_updated_at": synced_at if (not alerted and row.get("shopify_variant_id")) else "",
+            })
+
+    # ── Skipped (below increase threshold) ───────────────────────────
+    for sr in diff.skipped_rows:
+        sku = str(sr.get("sku", ""))
+        desc = str(sr.get("description", "") or "")
+        if not desc and sku in incoming_by_sku.index:
+            desc = str(incoming_by_sku.loc[sku].get("description", "") or "")
+        pct_val = sr.get("pct_change")
+        pct_str = f"+{pct_val:.1f}%" if pct_val is not None else ""
+        rows.append({
+            "timestamp": now_str,
+            "sku": sku,
+            "product_name": desc,
+            "old_supplier_price": _fmt_price(sr.get("old_price")),
+            "new_supplier_price": _fmt_price(sr.get("new_price")),
+            "pct_change": pct_str,
+            "direction": "increase",
+            "applied": "false",
+            "skip_reason": sr.get("skip_reason", "Below 2% increase threshold"),
+            "shopify_updated_at": "",
+        })
+
+    # ── Unchanged rows ────────────────────────────────────────────────
+    for ur in diff.unchanged_rows:
+        sku = str(ur.get("sku", ""))
+        price = ur.get("selling_price")
+        desc = str(ur.get("description", "") or "")
+        if not desc and sku in incoming_by_sku.index:
+            desc = str(incoming_by_sku.loc[sku].get("description", "") or "")
+        rows.append({
+            "timestamp": now_str,
+            "sku": sku,
+            "product_name": desc,
+            "old_supplier_price": _fmt_price(price),
+            "new_supplier_price": _fmt_price(price),
+            "pct_change": "0%",
+            "direction": "unchanged",
+            "applied": "false",
+            "skip_reason": "Price unchanged",
+            "shopify_updated_at": "",
+        })
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Obsidian log writer
+# ---------------------------------------------------------------------------
+
+def _write_obsidian_log(vault_path: str, run_summary: dict) -> None:
+    """
+    Write a markdown price sync summary to the Obsidian vault.
+    Path: {vault_path}/CFSA/Price Sync/YYYY-MM-DD_HH-MM_price-sync.md
+    Silently skips if vault_path is empty or the path is not writable.
+    """
+    try:
+        try:
+            import pytz
+            sast = pytz.timezone("Africa/Johannesburg")
+            now_sast = datetime.now(sast)
+        except ImportError:
+            # pytz not installed — fall back to UTC
+            now_sast = datetime.now(timezone.utc)
+
+        now_str  = now_sast.strftime("%Y-%m-%d %H:%M SAST")
+        file_ts  = now_sast.strftime("%Y-%m-%d_%H-%M")
+
+        processed         = sum(v.get("parsed", 0) for v in run_summary.values())
+        increases_applied = sum(v.get("increases_applied", 0) for v in run_summary.values())
+        increases_skipped = sum(v.get("skipped", 0) for v in run_summary.values())
+        decreases_applied = sum(v.get("decreases_applied", 0) for v in run_summary.values())
+        errors            = sum(v.get("errors", 0) for v in run_summary.values())
+
+        content = (
+            f"## Price Sync Run — {now_str}\n"
+            f"- Products processed: {processed}\n"
+            f"- Price increases applied: {increases_applied}\n"
+            f"- Price increases skipped (below 2% threshold): {increases_skipped}\n"
+            f"- Price decreases applied: {decreases_applied}\n"
+            f"- Errors: {errors}\n"
+        )
+
+        vault    = Path(vault_path)
+        out_dir  = vault / "CFSA" / "Price Sync"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_file = out_dir / f"{file_ts}_price-sync.md"
+        out_file.write_text(content, encoding="utf-8")
+        log.info("Obsidian log written to %s", out_file)
+
+    except Exception as exc:
+        log.warning("Obsidian log write failed (non-fatal): %s", exc)
 
 
 # ---------------------------------------------------------------------------

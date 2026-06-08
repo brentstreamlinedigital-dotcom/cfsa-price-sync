@@ -1,0 +1,118 @@
+# Competitor scraping configuration
+# ─────────────────────────────────
+# Add or disable competitors without touching any Python code.
+# priority: lower number = checked first; also determines column order in the log sheet.
+#
+# wait_until: Playwright page.goto wait_until strategy.
+#   "domcontentloaded" — fast, works for server-rendered / Shopify sites (~1s)
+#   "load"             — waits for window load event (~1-2s)
+#   "networkidle"      — slower; DO NOT use for sites with ad/analytics pixels (they fire forever)
+#
+# wait_for_selector: (optional) CSS selector to wait for AFTER page.goto returns.
+#   Use this for SPAs where products render after DOM is ready (e.g. Takealot React).
+# wait_for_selector_timeout: ms to wait for the selector (default 8000)
+#
+# strategy:
+#   "playwright"        — full browser, handles JS-rendered content
+#   "woocommerce_http"  — lightweight HTTP request, parses WooCommerce HTML directly (no browser)
+#   "shopify_json"      — uses Shopify's /search/suggest.json endpoint (clean JSON, ~200ms)
+#   "amazon_http"       — parses Amazon search results HTML by data-asin cards
+#   "takealot_api"      — hits Takealot's public REST API directly (~1s, very reliable)
+
+competitors:
+  - name: takealot
+    display_name: Takealot
+    base_url: https://www.takealot.com
+    # Takealot has a public JSON API — much faster (~1 s) and more reliable
+    # than scraping the React SPA (which never reaches networkidle and takes
+    # 8+ s of headless Chromium per query).
+    strategy: takealot_api
+    search_url_pattern: "https://www.takealot.com/all?qsearch={query}"  # for display only
+    priority: 1
+    enabled: true
+
+  - name: safari_centre_ct
+    display_name: Safari Centre CT
+    base_url: https://www.safaricentrecapetown.co.za
+    search_url_pattern: "https://www.safaricentrecapetown.co.za/?s={query}&post_type=product"
+    strategy: woocommerce_http   # Server-rendered WooCommerce — fast HTTP, no browser needed
+    wait_until: domcontentloaded # Used only if HTTP fallback triggers Playwright
+    priority: 2
+    enabled: true
+
+  - name: 4x4_mega_world
+    display_name: 4x4 Mega World
+    base_url: https://www.4x4megaworldonline.com
+    search_url_pattern: "https://www.4x4megaworldonline.com/?s={query}&post_type=product"
+    strategy: woocommerce_http   # WooCommerce — fast HTTP, no browser needed
+    wait_until: domcontentloaded
+    priority: 3
+    enabled: true
+
+  - name: trailpod
+    display_name: Trailpod
+    base_url: https://www.trailpod.co.za
+    search_url_pattern: "https://www.trailpod.co.za/?s={query}&post_type=product"
+    strategy: woocommerce_http
+    wait_until: domcontentloaded
+    priority: 4
+    enabled: true
+
+  - name: thr_outdoor
+    display_name: THR Outdoor
+    base_url: https://thr-outdoor.co.za
+    search_url_pattern: "https://thr-outdoor.co.za/?s={query}&post_type=product"
+    strategy: woocommerce_http
+    wait_until: domcontentloaded
+    priority: 5
+    enabled: true
+
+  - name: flex_adventures
+    display_name: Flex Adventures
+    base_url: https://www.flexadventures.co.za
+    search_url_pattern: "https://www.flexadventures.co.za/search?q={query}"  # display only
+    strategy: shopify_json
+    priority: 6
+    enabled: true
+
+  - name: wild_coolers
+    display_name: Wild Coolers
+    base_url: https://www.wildcoolers.com
+    search_url_pattern: "https://www.wildcoolers.com/search?q={query}"  # display only
+    strategy: shopify_json
+    priority: 7
+    enabled: true
+
+  - name: amazon_za
+    display_name: Amazon ZA
+    base_url: https://www.amazon.co.za
+    search_url_pattern: "https://www.amazon.co.za/s?k={query}&ref=nb_sb_noss"
+    strategy: amazon_http
+    priority: 8
+    enabled: true
+
+  # ── Disabled ─────────────────────────────────────────────────────
+  - name: futurama
+    display_name: Futurama
+    base_url: https://www.futurama.co.za
+    search_url_pattern: "https://www.futurama.co.za/search?q={query}&type=product"
+    strategy: playwright
+    wait_until: domcontentloaded
+    priority: 90
+    enabled: false   # Cloudflare blocks the scraper — needs anti-bot solution
+
+  - name: trailed
+    display_name: Trailed
+    base_url: https://www.trailed.co.za
+    search_url_pattern: "https://www.trailed.co.za/search?q={query}"
+    wait_until: domcontentloaded
+    priority: 91
+    enabled: false    # Site currently unreachable — re-enable when back online
+
+  - name: kitchen_trade
+    display_name: Kitchen Trade
+    base_url: https://kitchentrade.co.za
+    search_url_pattern: "https://kitchentrade.co.za/search?q={query}"
+    wait_until: domcontentloaded
+    priority: 92
+    enabled: false    # Does not stock camping fridges

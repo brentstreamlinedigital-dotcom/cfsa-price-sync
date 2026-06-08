@@ -23,6 +23,7 @@ requests>=2.33.0            # CVE: GHSA-gc5v-m9x4-r6x2 patched in 2.33.0
 
 # Scraping
 playwright>=1.40
+rapidfuzz>=3.0
 
 # Scheduling / Cloud
 google-cloud-secret-manager>=2.0

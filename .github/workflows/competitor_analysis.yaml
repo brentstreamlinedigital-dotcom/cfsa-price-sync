@@ -1,0 +1,66 @@
+name: Competitor Price Analysis
+
+on:
+  schedule:
+    # 09:00 SAST = 07:00 UTC daily
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      sku:
+        description: 'Analyse a single product by SKU (leave blank for all)'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (no sheet writes)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  analyse:
+    name: Scrape competitor prices
+    runs-on: ubuntu-latest
+    timeout-minutes: 60        # scraping 6 sites × full catalogue can take a while
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium --with-deps
+
+      - name: Write GCP service account key
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > sa-key.json
+          chmod 600 sa-key.json
+
+      - name: Run competitor analysis
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: sa-key.json
+          SHEETS_SPREADSHEET_ID:   ${{ secrets.SHEETS_SPREADSHEET_ID }}
+          SHOPIFY_SHOP_DOMAIN:     ${{ secrets.SHOPIFY_SHOP_DOMAIN }}
+          SHOPIFY_ACCESS_TOKEN:    ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
+          GCP_PROJECT: cfsa-price-sync
+          SKU_FILTER:  ${{ inputs.sku }}
+          DRY_RUN:     ${{ inputs.dry_run }}
+        run: |
+          ARGS=""
+          if [ -n "$SKU_FILTER" ]; then ARGS="$ARGS --sku $SKU_FILTER"; fi
+          if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python -m scrapers.competitor_analysis.main $ARGS
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-analysis-logs-${{ github.run_id }}
+          path: '*.log'
+          retention-days: 7
