@@ -197,6 +197,63 @@ class ShopifyClient:
         log.info("[Shopify] Loaded %d variant SKUs from store", len(sku_map))
         return sku_map
 
+    def get_sku_to_price_map(self) -> dict[str, float]:
+        """
+        Fetch ALL product variants from the store and return a mapping of
+        normalised SKU (uppercase, stripped) → CURRENT selling price (float, ZAR).
+
+        This is the live "what the customer sees on campingfridge.co.za" price,
+        which can differ from master.selling_price if anyone has edited the
+        price directly in Shopify admin. Used by competitor analysis so the
+        Pending Review cards display real Shopify prices, not the derived
+        rrp × formula value from the supplier sync.
+
+        Paginates automatically if the store has >250 variants.
+        """
+        query = """
+        query getAllVariantPrices($cursor: String) {
+          productVariants(first: 250, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                sku
+                price
+              }
+            }
+          }
+        }
+        """
+        price_map: dict[str, float] = {}
+        cursor: Optional[str] = None
+
+        while True:
+            variables: dict = {}
+            if cursor:
+                variables["cursor"] = cursor
+
+            data = self._graphql(query, variables)
+            variants_data = data.get("productVariants", {})
+
+            for edge in variants_data.get("edges", []):
+                node = edge.get("node", {})
+                raw_sku = (node.get("sku") or "").strip()
+                raw_price = node.get("price")
+                if not raw_sku or raw_price is None:
+                    continue
+                try:
+                    price_map[raw_sku.upper()] = float(raw_price)
+                except (TypeError, ValueError):
+                    continue
+
+            page_info = variants_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            time.sleep(_RATE_LIMIT_DELAY)
+
+        log.info("[Shopify] Loaded %d live SKU→price pairs from store", len(price_map))
+        return price_map
+
     def bulk_sync(
         self,
         rows: list[dict],

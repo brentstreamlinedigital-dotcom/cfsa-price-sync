@@ -158,6 +158,48 @@ async def run(
         log.info("No active (linked) products found — nothing to analyse")
         return
 
+    # ── Live Shopify price override ──────────────────────────────────
+    # master.selling_price is a CALCULATED value (rrp × formula) from the
+    # supplier sync. The customer-facing price on campingfridge.co.za can
+    # diverge from it (manual edits, approved overrides, etc.). For the
+    # competitor analysis we want the ACTUAL price the customer sees, so
+    # we pull it directly from Shopify and override per-product before
+    # pricing / discrepancy calculation.
+    try:
+        shop_cfg = app_cfg.get("shopify", {})
+        shop_domain = os.getenv("SHOPIFY_SHOP_DOMAIN") or shop_cfg.get("shop_domain", "")
+        shop_token  = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+        if shop_domain and shop_token:
+            from src.shopify_client import ShopifyClient
+            shopify = ShopifyClient(
+                shop_domain=shop_domain,
+                access_token=shop_token,
+                api_version=shop_cfg.get("api_version", "2024-10"),
+            )
+            sku_to_live_price = shopify.get_sku_to_price_map()
+            n_overridden = 0
+            for p in products:
+                sku_upper = str(p.get("sku", "")).upper().strip()
+                live = sku_to_live_price.get(sku_upper)
+                if live is not None and live > 0:
+                    p["selling_price"] = live
+                    n_overridden += 1
+            log.info(
+                "Overrode %d/%d product prices with live Shopify values",
+                n_overridden, len(products),
+            )
+        else:
+            log.warning(
+                "Shopify credentials not set — using master.selling_price "
+                "(may differ from live website price)"
+            )
+    except Exception as exc:
+        # Non-fatal: fall back to master.selling_price
+        log.warning(
+            "Live Shopify price fetch failed (%s) — using master.selling_price",
+            exc,
+        )
+
     log.info(
         "Starting competitor analysis: %d products × %d competitors (dry_run=%s)",
         len(products), len(competitors), dry_run,
