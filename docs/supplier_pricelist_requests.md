@@ -1,5 +1,18 @@
 # Supplier Pricelist Request Templates
 
+## Status — last updated after Snomaster + Dometic (THR-Outdoor) pricelist ingestion
+
+**Real cost data now in master:** 10 SKUs (6 Dometic, 4 Snomaster) — extracted
+from the Oct 2025 Snomaster wholesale and Dec 2025 THR-Outdoor Dometic dealer
+pricelists. The remaining 14 live products use the estimated `rrp × ratio`
+fallback (flagged `(est.)` in dashboard) until their supplier pricelists arrive.
+
+**Still need pricelists from:** Engel (3), Flex (5), DAG (1), plus a few stragglers
+not in the Dometic/Snomaster lists (2 Dometic, 3 Snomaster — see below).
+
+---
+
+
 For each of these 5 suppliers, our automated system can ingest their pricelist
 directly if they email us an `.xlsx` or `.csv` attachment with at least these
 columns: **`SKU`**, **`Description`**, **`Cost Inc`**, **`Full Retails`**
@@ -14,7 +27,14 @@ poller picks it up.
 
 ---
 
-## 1. Dometic (via THR-SA distributor) — 8 products
+## 1. Dometic (via THR-SA distributor) — 2 products still missing
+
+✅ **Already covered (6 SKUs)** from the Dec 2025 THR-Outdoor Dometic dealer
+pricelist: CFF70, CFF45, CFF35, CFX35, CDF-18, CFX50 — real costs in master.
+
+**Still need pricing for these 2 SKUs** (not in the Dec 2025 pricelist):
+- `9620000726` — Dometic CD-30 Drawer Fridge
+- `9600029485` — Dometic CFF12 Fridge/Freezer
 
 **Send to:** Your THR-SA account manager (cc dometic.com if relevant)
 **Configured to read from:** `thr-outdoor.co.za`, `thrsa.co.za`, `dometic.com`
@@ -38,7 +58,20 @@ poller picks it up.
 
 ---
 
-## 2. Snomaster — 7 products
+## 2. Snomaster — 3 products still missing
+
+✅ **Already covered (4 SKUs)** from the Oct 2025 Snomaster wholesale pricelist:
+SMDZ-TR42S, SMLS-57, SMLS-38 (alias SMDZ-LS135), SMDZ-LS12 — real costs
+computed as wholesale × 1.15 VAT, now in master.
+
+**Still need pricing for these 3 SKUs** (not in the Oct 2025 pricelist):
+- `SMDZ-LS25` — 25.2L Portable fridge/freezer
+- `SMDZ-LS60D` — 60L Dual-Compartment Portable
+- `SMDZ-LS55` — 55L Portable
+
+These may have been renamed (Snomaster has been changing codes — e.g.
+`SMDZ-LS135` is now `SMLS-38`). Ask Snomaster directly whether these are
+discontinued or have new codes.
 
 **Send to:** Snomaster sales / dealer support
 **Configured to read from:** `snomaster.co.za`
