@@ -260,6 +260,8 @@ class ShopifyClient:
         location_id: str,
         sync_price: bool = True,
         sync_inventory: bool = True,
+        respect_manual_edits: bool = True,
+        manual_edit_tolerance: float = 1.0,
     ) -> list[dict]:
         """
         Sync price and/or inventory for a list of master sheet rows.
@@ -271,10 +273,23 @@ class ShopifyClient:
           - stock_qty (optional)
           - sku (for logging)
 
-        Returns list of failed rows with their error details.
+        Manual-edit protection (respect_manual_edits=True, default):
+          Before pushing a new price, the current live Shopify price is
+          fetched. If it differs from the value we would push by more than
+          `manual_edit_tolerance` ZAR, we assume an operator made a manual
+          edit in Shopify admin and SKIP the push for that row (logged at
+          WARNING level). The row's stock can still be synced.
+
+          This prevents the calculated supplier-formula price from silently
+          overwriting deliberate manual discounts or markups.
+
+        Returns list of failed rows with their error details. Skipped rows
+        (due to manual-edit protection) are NOT in the failed list — they
+        are logged separately and reported in the caller's summary.
         """
         failed: list[dict] = []
         total = len(rows)
+        skipped_manual = 0
 
         for i, row in enumerate(rows, start=1):
             variant_id = row.get("shopify_variant_id")
@@ -286,8 +301,9 @@ class ShopifyClient:
                 continue
 
             try:
-                # Fetch product_id + inventory_item_id in one query up front
-                # so both price update and inventory update can reuse the data
+                # Fetch product_id + inventory_item_id + current live price.
+                # _get_variant_info doesn't return price; do a small extra
+                # GraphQL hit when manual-edit protection is enabled.
                 product_id: Optional[str] = None
                 inv_id: Optional[str] = None
                 if sync_price or sync_inventory:
@@ -300,10 +316,32 @@ class ShopifyClient:
                     price = float(row.get("selling_price") or 0)
                     rrp = row.get("rrp")
                     compare_at = float(rrp) if rrp else None
-                    self.update_variant_price(
-                        variant_id, price, compare_at, product_id=product_id
-                    )
-                    time.sleep(_RATE_LIMIT_DELAY)
+
+                    # ── Manual-edit protection ─────────────────────────
+                    if respect_manual_edits:
+                        live_price = self._get_variant_price(variant_id)
+                        if live_price is not None:
+                            # If we'd be pushing a value that diverges from
+                            # the live price by more than tolerance, the
+                            # operator (or another process) has manually
+                            # adjusted it. Don't clobber.
+                            if abs(live_price - price) > manual_edit_tolerance:
+                                log.warning(
+                                    "[Shopify] SKU %s — live price R%.2f differs from "
+                                    "calculated R%.2f by R%.2f. Preserving manual edit, "
+                                    "skipping price push.",
+                                    sku, live_price, price, live_price - price,
+                                )
+                                skipped_manual += 1
+                                # Still allow stock sync below
+                                price = None  # signal: don't push
+                            time.sleep(_RATE_LIMIT_DELAY)
+
+                    if price is not None:
+                        self.update_variant_price(
+                            variant_id, price, compare_at, product_id=product_id
+                        )
+                        time.sleep(_RATE_LIMIT_DELAY)
 
                 if sync_inventory:
                     qty = row.get("stock_qty")
@@ -319,6 +357,12 @@ class ShopifyClient:
 
         if failed:
             log.warning("[Shopify] %d/%d rows failed to sync", len(failed), total)
+        if skipped_manual:
+            log.warning(
+                "[Shopify] %d/%d rows had their price-push skipped due to manual "
+                "edits on Shopify. Set respect_manual_edits=False to override.",
+                skipped_manual, total,
+            )
 
         return failed
 
@@ -348,6 +392,31 @@ class ShopifyClient:
             "product_id": (variant.get("product") or {}).get("id"),
             "inventory_item_id": (variant.get("inventoryItem") or {}).get("id"),
         }
+
+    def _get_variant_price(self, variant_id: str) -> Optional[float]:
+        """
+        Fetch the CURRENT live price for a single variant from Shopify.
+
+        Used by bulk_sync()'s manual-edit protection — we compare what we're
+        about to push against what's actually live, and skip the push when
+        an operator has manually edited the price in Shopify admin.
+
+        Returns None if the variant isn't found or the price can't be parsed.
+        """
+        query = """
+        query getVariantPrice($id: ID!) {
+          productVariant(id: $id) { price }
+        }
+        """
+        try:
+            data = self._graphql(query, {"id": variant_id})
+            variant = data.get("productVariant")
+            if not variant:
+                return None
+            raw = variant.get("price")
+            return float(raw) if raw is not None else None
+        except (ValueError, TypeError, ShopifyAPIError):
+            return None
 
     def _graphql(self, query: str, variables: dict) -> dict:
         for attempt in range(1, _MAX_RETRIES + 1):
