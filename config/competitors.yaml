@@ -40,14 +40,34 @@ competitors:
     priority: 2
     enabled: true
 
+  - name: ac_direct
+    display_name: AC Direct
+    base_url: https://acdirect.co.za
+    search_url_pattern: "https://acdirect.co.za/?s={query}&post_type=product"
+    strategy: woocommerce_http
+    wait_until: domcontentloaded
+    priority: 3
+    enabled: true
+
+  - name: kloppers
+    display_name: Kloppers
+    base_url: https://kloppers.co.za
+    search_url_pattern: "https://kloppers.co.za/?s={query}&post_type=product"
+    strategy: playwright          # kloppers.co.za returns 402 to plain HTTP; needs full browser
+    wait_until: domcontentloaded
+    wait_for_selector: ".products li.product, .woocommerce-loop-product__title"
+    wait_for_selector_timeout: 10000
+    priority: 4
+    enabled: true
+
   - name: 4x4_mega_world
     display_name: 4x4 Mega World
     base_url: https://www.4x4megaworldonline.com
     search_url_pattern: "https://www.4x4megaworldonline.com/?s={query}&post_type=product"
-    strategy: woocommerce_http   # WooCommerce — fast HTTP, no browser needed
+    strategy: woocommerce_http
     wait_until: domcontentloaded
-    priority: 3
-    enabled: true
+    priority: 10
+    enabled: false   # Supplier (stocks ARB, Engel) — not a competitor
 
   - name: trailpod
     display_name: Trailpod
@@ -64,16 +84,16 @@ competitors:
     search_url_pattern: "https://thr-outdoor.co.za/?s={query}&post_type=product"
     strategy: woocommerce_http
     wait_until: domcontentloaded
-    priority: 5
-    enabled: true
+    priority: 11
+    enabled: false   # Supplier (Dometic distributor) — not a competitor
 
   - name: flex_adventures
     display_name: Flex Adventures
     base_url: https://www.flexadventures.co.za
     search_url_pattern: "https://www.flexadventures.co.za/search?q={query}"  # display only
     strategy: shopify_json
-    priority: 6
-    enabled: true
+    priority: 12
+    enabled: false   # Supplier (Flex brand) — not a competitor
 
   - name: wild_coolers
     display_name: Wild Coolers

@@ -23,10 +23,14 @@ source:
     - pdf
 
 scrape_fallback:
-  enabled: true
-  days_threshold: 0        # always scrape — no email feed
+  # Disabled: dometic.com uses Next.js App Router with streaming RSC — product
+  # data never lands in static HTML and the Playwright approach is unreliable.
+  # Dometic pricing is fully covered by dometic_thrsa (thr-outdoor.co.za pmw_json)
+  # which works cleanly and covers all SKUs we stock.
+  enabled: false
+  days_threshold: 0
   url: https://www.dometic.com/en-za/category/coolers/electric-coolers
-  strategy: dometic_lp     # Playwright renderer — waits for React hydration then extracts cards
+  strategy: dometic_lp
 
 # Columns returned by dometic_lp: sku, name, price
 # Dometic.com prices are displayed inc. VAT for ZA customers.

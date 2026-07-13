@@ -66,9 +66,10 @@ class PlaywrightScraper(BaseScraper):
                 if auth:
                     await self._login(page, auth)
 
-                # dometic_lp never reaches networkidle (background fetches);
-                # wait for domcontentloaded then let the strategy handle the rest.
-                wait_event = "domcontentloaded" if strategy == "dometic_lp" else "networkidle"
+                # dometic_lp and product_grid (Elementor) never reach networkidle
+                # due to background JS fetches — use domcontentloaded instead.
+                _no_idle = {"dometic_lp", "product_grid"}
+                wait_event = "domcontentloaded" if strategy in _no_idle else "networkidle"
                 await page.goto(url, wait_until=wait_event, timeout=30_000)
 
                 if strategy == "table":
@@ -587,77 +588,154 @@ class PlaywrightScraper(BaseScraper):
     # ------------------------------------------------------------------
 
     async def _extract_product_grid(self, page: Page, base_url: str, cfg: dict) -> pd.DataFrame:
-        """Scrape product cards from a WooCommerce or Shopify storefront listing page."""
+        """
+        Scrape product cards from a WooCommerce storefront listing page.
+
+        Handles two WooCommerce rendering modes:
+        - Standard WC loop: products have .woocommerce-loop-product__title
+        - Elementor loop builder (e.g. SnoMaster): products use .e-loop-item.product
+          with prices loaded via JS after page render — requires Playwright.
+        """
         brand_filter = cfg.get("brand_filter", "")
         all_rows = []
         page_num = 1
-        max_pages = 20  # safety cap
+        max_pages = 20
 
         while page_num <= max_pages:
-            # Wait for WooCommerce product grid to render (handles AJAX-loaded content)
+            # Wait for WooCommerce products — standard WC loop OR Elementor loop
             try:
                 await page.wait_for_selector(
                     "ul.products li.product, .products li.product, "
-                    ".woocommerce-loop-product__title, .product-title",
-                    timeout=20_000
+                    ".woocommerce-loop-product__title, .product-title, "
+                    ".e-loop-item.product, li.type-product",
+                    timeout=25_000,
                 )
             except Exception:
-                log.warning("[%s] product_grid: timed out waiting for products on page %d",
-                            self.config.get("supplier_key", "?"), page_num)
-                # Log first 500 chars of page to help debug
+                log.warning(
+                    "[%s] product_grid: timed out waiting for products on page %d",
+                    self.config.get("supplier_key", "?"), page_num,
+                )
                 snippet = await page.evaluate("() => document.body.innerText.substring(0, 300)")
                 log.debug("[%s] Page snippet: %s", self.config.get("supplier_key", "?"), snippet)
                 break
+
+            # Wait for prices to load — Elementor fetches them via AJAX after
+            # the DOM is ready, so .woocommerce-Price-amount may appear late.
+            # Timeout is non-fatal: if no prices load we still get titles + URLs.
+            try:
+                await page.wait_for_selector(
+                    ".woocommerce-Price-amount bdi", timeout=8_000
+                )
+            except Exception:
+                log.debug(
+                    "[%s] product_grid: no price elements appeared on page %d "
+                    "(JS prices may not be available)",
+                    self.config.get("supplier_key", "?"), page_num,
+                )
 
             rows = await page.evaluate(
                 """
                 () => {
                     const results = [];
-                    // Anchor from title upward — works across all WooCommerce themes
-                    const titleEls = document.querySelectorAll(
+
+                    // ── Standard WC loop ──────────────────────────────────────
+                    // Works for most WooCommerce themes (Storefront, Flatsome, etc.)
+                    const stdTitles = document.querySelectorAll(
                         '.woocommerce-loop-product__title, ' +
                         'h2.product-title, h3.product-title, ' +
-                        '.product-name, .woocommerce-loop-product__link h2'
+                        '.product-name'
                     );
-                    titleEls.forEach(titleEl => {
-                        // Walk up to find the product container
+                    stdTitles.forEach(titleEl => {
                         const item = titleEl.closest('li, article, .product, [class*="product"]');
                         const priceEl = item ? item.querySelector(
                             '.price ins .woocommerce-Price-amount bdi, ' +
                             '.price .woocommerce-Price-amount bdi, ' +
                             '.woocommerce-Price-amount bdi'
                         ) : null;
-                        const skuEl = item ? item.querySelector('[data-sku], .sku') : null;
-                        const linkEl = item ? item.querySelector('a.woocommerce-LoopProduct-link, a[href]') : null;
+                        const skuEl  = item ? item.querySelector('[data-sku], .sku') : null;
+                        const linkEl = item ? item.querySelector(
+                            'a.woocommerce-LoopProduct-link, a[href*="/product/"]'
+                        ) : null;
                         results.push({
                             description: titleEl.innerText.trim(),
                             price: priceEl ? priceEl.innerText.replace(/[^0-9.,]/g, '').trim() : '',
-                            sku: skuEl ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
-                            url: linkEl ? linkEl.href : ''
+                            sku:   skuEl  ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
+                            url:   linkEl ? linkEl.href : '',
+                            _source: 'std',
                         });
                     });
+
+                    // ── Elementor loop builder (e.g. SnoMaster) ───────────────
+                    // Elementor replaces the WC loop template with its own Loop
+                    // Builder widget. Each product is an <li class="e-loop-item product …">.
+                    // The WC price widget still renders .woocommerce-Price-amount bdi
+                    // once JS has executed, and the title widget renders an <h> tag
+                    // inside .elementor-widget-woocommerce-product-title.
+                    if (results.length === 0) {
+                        const loopItems = document.querySelectorAll(
+                            '.e-loop-item.product, li.type-product'
+                        );
+                        loopItems.forEach(item => {
+                            // Title — inside Elementor's WC product title widget
+                            const titleEl = item.querySelector(
+                                '.elementor-widget-woocommerce-product-title h1, ' +
+                                '.elementor-widget-woocommerce-product-title h2, ' +
+                                '.elementor-widget-woocommerce-product-title h3, ' +
+                                '.elementor-widget-woocommerce-product-title h4, ' +
+                                '.elementor-heading-title, ' +
+                                'h2, h3'
+                            );
+                            // Price — WC price widget renders standard .woocommerce-Price-amount
+                            // bdi even inside Elementor (the widget is a WC shortcode wrapper)
+                            const priceEl = item.querySelector(
+                                '.woocommerce-Price-amount bdi'
+                            );
+                            // Link — product permalink is on the featured-image or title anchor
+                            const linkEl = item.querySelector(
+                                'a[href*="/product/"], a.woocommerce-LoopProduct-link'
+                            );
+                            // SKU — may be in a data attribute or .sku span (often not in loop)
+                            const skuEl = item.querySelector('[data-sku], .sku');
+
+                            if (!titleEl) return;
+                            results.push({
+                                description: titleEl.innerText.trim(),
+                                price: priceEl ? priceEl.innerText.replace(/[^0-9.,]/g, '').trim() : '',
+                                sku:   skuEl ? (skuEl.dataset.sku || skuEl.innerText.trim()) : '',
+                                url:   linkEl ? linkEl.href : '',
+                                _source: 'elementor',
+                            });
+                        });
+                    }
+
                     return results;
                 }
                 """
             )
 
             if not rows:
-                log.warning("[%s] product_grid: no products found on page %d",
-                            self.config.get("supplier_key", "?"), page_num)
+                log.warning(
+                    "[%s] product_grid: no products found on page %d",
+                    self.config.get("supplier_key", "?"), page_num,
+                )
                 break
 
             for row in rows:
                 if brand_filter and brand_filter.lower() not in row.get("description", "").lower():
                     continue
+                row.pop("_source", None)
                 all_rows.append(row)
 
-            log.debug("[%s] product_grid page %d: %d products",
-                      self.config.get("supplier_key", "?"), page_num, len(rows))
+            log.debug(
+                "[%s] product_grid page %d: %d products",
+                self.config.get("supplier_key", "?"), page_num, len(rows),
+            )
 
-            # Try to navigate to next page
+            # Next page — handle both WC pagination and Elementor pagination widget
             next_link = page.locator(
                 'a.next.page-numbers, '
-                '.woocommerce-pagination a:text("→"), '
+                '.woocommerce-pagination a.next, '
+                '.e-load-more-button, '
                 '[aria-label="Next page"], '
                 'a:text("Next →"), '
                 'a:text("Next")'
@@ -670,13 +748,12 @@ class PlaywrightScraper(BaseScraper):
                 next_href = await next_link.get_attribute("href")
                 if not next_href:
                     break
-                await page.goto(next_href, wait_until="networkidle", timeout=30_000)
+                await page.goto(next_href, wait_until="domcontentloaded", timeout=30_000)
                 page_num += 1
             except Exception:
                 break
 
         df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
-        # Clean prices — remove commas e.g. "8,495.00" → "8495.00"
         if "price" in df.columns:
             df["price"] = df["price"].str.replace(",", "", regex=False)
         return df

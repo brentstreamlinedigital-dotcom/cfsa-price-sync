@@ -1108,8 +1108,9 @@ with t2:
         # / completely missing. Operators need to know at a glance how
         # trustworthy the margin numbers are across the catalog.
         sv_check = suppliers_view.copy()
-        sv_check["_cost_str"] = sv_check.get("cost_inc", "").astype(str).str.strip()
-        sv_check["_src"] = sv_check.get("cost_source", "").astype(str).str.strip().str.lower()
+        _empty = pd.Series("", index=sv_check.index, dtype=str)
+        sv_check["_cost_str"] = sv_check["cost_inc"].astype(str).str.strip() if "cost_inc" in sv_check.columns else _empty
+        sv_check["_src"] = sv_check["cost_source"].astype(str).str.strip().str.lower() if "cost_source" in sv_check.columns else _empty
         n_total      = len(sv_check)
         n_supplier   = int(((sv_check["_cost_str"] != "") & (sv_check["_src"] == "supplier")).sum())
         n_estimated  = int(((sv_check["_cost_str"] != "") & (sv_check["_src"] == "estimated")).sum())
