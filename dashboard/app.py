@@ -1678,7 +1678,7 @@ with t7:
     # Determine whether the most recent run has any usable price data
     _last_run_all_failed = False
     if not cal.empty and "status" in cal.columns and "_ts" in cal.columns:
-        _last_run_rows = cal[cal["_ts"] == cal["_ts"].dropna().max()] if cal["_ts"].dropna().any() else cal.head(0)
+        _last_run_rows = cal[cal["_ts"] == cal["_ts"].dropna().max()] if not cal["_ts"].dropna().empty else cal.head(0)
         if not _last_run_rows.empty:
             _has_price = (
                 pd.to_numeric(_last_run_rows.get("cheapest_competitor", pd.Series([], dtype=str)), errors="coerce")
