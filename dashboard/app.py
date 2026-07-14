@@ -905,9 +905,9 @@ def _ca_progress_fragment():
 # ─────────────────────────────────────────────────────────────
 # Tabs
 # ─────────────────────────────────────────────────────────────
-t1, t2, t3, t4, t5, t6, t7 = st.tabs([
+t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
     "Price Changes", "Suppliers", "Alerts", "New Products",
-    "All Products", "Price Sync", "Competitor Analysis",
+    "All Products", "Price Sync", "Competitor Analysis", "Held for Review",
 ])
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1666,329 +1666,34 @@ with t7:
             return None
         return ShopifyClient(shop_domain=domain, access_token=token)
 
-    # ── Pending Review table ──────────────────────────────────────────
-    st.markdown('<div class="slabel">Pending review</div>', unsafe_allow_html=True)
-    st.markdown(
-        f"<p style='color:{T3};font-size:.82rem;margin-bottom:16px'>"
-        "These products have a competitor price lower than CFSA. "
-        "Review the AI suggested price, adjust if needed, then Approve or Reject.</p>",
-        unsafe_allow_html=True,
-    )
-
-    # Determine whether the most recent run has any usable price data
-    _last_run_all_failed = False
-    if not cal.empty and "status" in cal.columns and "_ts" in cal.columns:
-        _last_run_rows = cal[cal["_ts"] == cal["_ts"].dropna().max()] if not cal["_ts"].dropna().empty else cal.head(0)
-        if not _last_run_rows.empty:
-            _has_price = (
-                pd.to_numeric(_last_run_rows.get("cheapest_competitor", pd.Series([], dtype=str)), errors="coerce")
-                .notna()
-                .any()
-            )
-            _last_run_all_failed = not _has_price
-
-    if cal.empty or "status" not in cal.columns:
-        st.markdown(f"""
-        <div class="card" style="text-align:center;padding:28px">
-          <div style="font-size:1.2rem;margin-bottom:8px">📭</div>
-          <div style="color:{T2};font-weight:600;margin-bottom:6px">No competitor analysis data yet</div>
-          <div style="color:{T3};font-size:.85rem">Click <b>Run Analysis Now</b> above to scrape competitor prices for the first time.</div>
-        </div>""", unsafe_allow_html=True)
-    elif _last_run_all_failed:
-        st.markdown(f"""
-        <div class="card" style="text-align:center;padding:28px;border-color:{RED}33">
-          <div style="font-size:1.2rem;margin-bottom:8px">⚠️</div>
-          <div style="color:{RED};font-weight:600;margin-bottom:6px">Last run returned no competitor prices</div>
-          <div style="color:{T3};font-size:.85rem">
-            All scrapes failed or no fuzzy matches exceeded the threshold.<br>
-            Check network access, Playwright installation, and whether competitor sites are reachable.<br>
-            The data below (if any) is from a previous run.
-          </div>
-        </div>""", unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-
+    # ── Pending review banner (full UI lives in t8) ──────────────────
     if not cal.empty and "status" in cal.columns:
-        # Use only the MOST RECENT row per SKU — without this, every historical
-        # run appears as a duplicate pending card (one per SKU per run).
-        # If a SKU's latest status is no longer PENDING/MARGIN_FLOOR, it drops out.
-        cal_latest = cal.copy()
-        if "_ts" in cal_latest.columns and "sku" in cal_latest.columns:
-            cal_latest = (
-                cal_latest.sort_values("_ts", ascending=False)
-                          .drop_duplicates(subset=["sku"], keep="first")
+        _cal_pending_count = int(
+            cal.sort_values("_ts", ascending=False)
+               .drop_duplicates(subset=["sku"], keep="first")["status"]
+               .isin(["PENDING_REVIEW", "MARGIN_FLOOR_HIT"])
+               .sum()
+        ) if "_ts" in cal.columns and "sku" in cal.columns else 0
+        if _cal_pending_count:
+            st.markdown(
+                f"<div style='background:rgba(240,168,74,.08);border:1px solid {AMBER}33;"
+                f"border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;"
+                f"align-items:center;gap:12px'>"
+                f"<span style='font-size:1.2rem'>⚠</span>"
+                f"<span style='color:{T2};font-size:.88rem'>"
+                f"<b style='color:{AMBER}'>{_cal_pending_count} product{'s' if _cal_pending_count!=1 else ''} held for review.</b> "
+                f"Open the <b>Held for Review</b> tab to approve or reject price changes.</span>"
+                f"</div>",
+                unsafe_allow_html=True,
             )
-        pending_df = cal_latest[
-            cal_latest["status"].isin(["PENDING_REVIEW", "MARGIN_FLOOR_HIT"])
-        ].copy()
-
-        # ── Global warning for products missing cost data ─────────────
-        # The margin floor in the pricer can only enforce a minimum if cost
-        # is known. When cost is empty, suggested prices could theoretically
-        # be set below true wholesale — surface this to the operator so they
-        # know to populate cost (in master) before approving.
-        if not pending_df.empty and "cost_price" in pending_df.columns:
-            no_cost = pending_df["cost_price"].astype(str).str.strip().eq("")
-            n_missing_cost = int(no_cost.sum())
-            if n_missing_cost > 0:
-                st.markdown(
-                    f"<div style='background:rgba(255,170,0,.08);border:1px solid {AMBER};"
-                    f"border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem'>"
-                    f"<b style='color:{AMBER}'>⚠ {n_missing_cost} of {len(pending_df)} pending "
-                    f"products lack wholesale cost data.</b> "
-                    f"<span style='color:{T3}'>Margin cannot be calculated and the margin "
-                    f"floor is not enforced. Add <code>cost_inc</code> in the master sheet "
-                    f"(or via the Suppliers tab) before approving these prices.</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-        if pending_df.empty:
-            st.markdown(f"""
-            <div class="card" style="text-align:center;padding:28px;border-color:{G_10}">
-              <div style="font-size:1.2rem;margin-bottom:6px">✅</div>
-              <div style="color:{T2}">No items pending review</div>
-            </div>""", unsafe_allow_html=True)
         else:
-            # Show most recent run first, then by discrepancy descending
-            if "_ts" in pending_df.columns:
-                pending_df = pending_df.sort_values(["_ts", "discrepancy_rand"], ascending=[False, False])
-
-            for _, row in pending_df.iterrows():
-                sku           = str(row.get("sku", ""))
-                product_name  = _strip_html(str(row.get("product_name", "")))
-                cfsa_price    = row.get("cfsa_current_price", "")
-                cost_price    = row.get("cost_price", "")
-                margin        = row.get("margin_pct", "")
-                ai_suggested  = row.get("ai_suggested_price", "")
-                disc_raw      = row.get("discrepancy_rand", "")
-                status_val    = str(row.get("status", ""))
-                run_id        = str(row.get("run_id", ""))
-                variant_id    = str(row.get("shopify_variant_id", "")) if "shopify_variant_id" in row else ""
-
-                # Discrepancy colour
-                try:
-                    disc_val = float(str(disc_raw).replace(",", ""))
-                    disc_colour = RED if disc_val > 500 else (AMBER if disc_val > 100 else G)
-                    disc_str = f"R{disc_val:,.2f}"
-                except (ValueError, TypeError):
-                    disc_colour = T3
-                    disc_str = "—"
-
-                floor_badge = (
-                    "<span class='badge' style='background:rgba(240,168,74,.1);"
-                    f"color:{AMBER};border:1px solid rgba(240,168,74,.2);margin-left:8px'>"
-                    "MARGIN FLOOR</span>"
-                    if status_val == "MARGIN_FLOOR_HIT" else ""
-                )
-
-                row_key = f"{run_id}_{sku}"
-
-                with st.container():
-                    # ── Card header ──────────────────────────────────────
-                    col_info, col_disc = st.columns([3, 1])
-                    with col_info:
-                        st.markdown(
-                            f"<div style='font-family:{MONO};font-size:.95rem;font-weight:600;"
-                            f"color:{T1}'>{sku}{floor_badge}</div>"
-                            f"<div style='font-size:.82rem;color:{T2};margin-top:2px;"
-                            f"margin-bottom:6px'>{product_name}</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with col_disc:
-                        st.markdown(
-                            f"<div style='text-align:right'>"
-                            f"<div style='font-size:.62rem;color:{T3};text-transform:uppercase;"
-                            f"letter-spacing:.08em'>Discrepancy</div>"
-                            f"<div style='font-size:1.05rem;font-weight:700;font-family:{MONO};"
-                            f"color:{disc_colour}'>{disc_str}</div></div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    # ── Competitor price chips ────────────────────────────
-                    chip_cols = st.columns(len(COMPETITORS))
-                    for ci, comp in enumerate(COMPETITORS):
-                        col_key = f"{comp['name']}_price"
-                        val = str(row.get(col_key, "")) if col_key in row.index else ""
-                        price_str = f"R{val}" if val else "—"
-                        price_colour = G if val else T3
-                        with chip_cols[ci]:
-                            st.markdown(
-                                f"<div style='background:{C2};border-radius:6px;padding:5px 8px;"
-                                f"text-align:center'>"
-                                f"<div style='font-size:.6rem;color:{T3};text-transform:uppercase;"
-                                f"letter-spacing:.06em;margin-bottom:2px'>{COMP_DISPLAY[comp['name']]}</div>"
-                                f"<div style='font-family:{MONO};font-size:.8rem;font-weight:600;"
-                                f"color:{price_colour}'>{price_str}</div></div>",
-                                unsafe_allow_html=True,
-                            )
-
-                    # ── Price summary row ─────────────────────────────────
-                    # When cost is missing, render an amber warning instead of "—"
-                    # so the operator knows this is a data gap (not just zero/empty).
-                    # When cost is estimated (rrp × ratio), tag with "(est.)" so
-                    # the operator knows it's not from a real supplier pricelist.
-                    cost_source = str(row.get("cost_source", "") or "").strip()
-                    if cost_price and cost_source == "estimated":
-                        cost_html = (
-                            f"<span title='Estimated wholesale cost: RRP × supplier ratio. "
-                            f"Replace with real cost from the supplier pricelist when available.'>"
-                            f"Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cost_price}</b>"
-                            f"&nbsp;<span style='color:{AMBER};font-size:.7rem'>(est.)</span></span>"
-                        )
-                    elif cost_price:
-                        cost_html = (
-                            f"<span>Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>"
-                            f"R{cost_price}</b></span>"
-                        )
-                    else:
-                        cost_html = (
-                            f"<span title='Wholesale cost not stored in master sheet — "
-                            f"margin floor cannot be enforced for this product.' "
-                            f"style='color:{AMBER}'>"
-                            f"⚠ Cost not in master</span>"
-                        )
-
-                    if margin:
-                        margin_html = f"<span>Margin&nbsp;<b style='color:{T1}'>{margin}</b></span>"
-                    else:
-                        margin_html = (
-                            f"<span style='color:{AMBER}'>Margin unknown</span>"
-                        )
-
-                    st.markdown(
-                        f"<div style='display:flex;gap:24px;font-size:.75rem;color:{T2};"
-                        f"margin-top:8px;margin-bottom:4px;padding:8px 0;"
-                        f"border-top:1px solid {BDR}'>"
-                        f"<span>CFSA&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cfsa_price}</b></span>"
-                        f"{cost_html}{margin_html}"
-                        f"<span>AI Suggested&nbsp;<b style='color:{G};font-family:{MONO}'>"
-                        f"{'R'+str(ai_suggested) if ai_suggested else '—'}</b></span>"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(f"<div style='height:1px;background:{BDR};margin-bottom:8px'></div>",
-                                unsafe_allow_html=True)
-
-                    col_inp, col_approve, col_reject = st.columns([3, 1, 1])
-                    with col_inp:
-                        try:
-                            default_val = float(str(ai_suggested).replace(",", "")) if ai_suggested else 0.0
-                        except ValueError:
-                            default_val = 0.0
-                        override = st.number_input(
-                            "Override price (R)",
-                            value=default_val,
-                            min_value=0.0,
-                            step=10.0,
-                            format="%.2f",
-                            key=f"ca_override_{row_key}",
-                            label_visibility="collapsed",
-                        )
-                    with col_approve:
-                        if st.button("✓ Approve", key=f"ca_approve_{row_key}", use_container_width=True):
-                            # ── Approval guardrails ─────────────────────────
-                            # Catch obvious mistakes BEFORE we write to Shopify:
-                            #   1. Price must be a positive finite number
-                            #   2. Price must be within a sane range relative to CFSA's current price
-                            #      (catches typos like 70990 instead of 7099)
-                            #   3. Variant ID, if present, must look like a Shopify ID (digits only)
-                            try:
-                                cfsa_p = float(row.get("cfsa_current_price", 0) or 0)
-                            except (TypeError, ValueError):
-                                cfsa_p = 0.0
-                            err: Optional[str] = None
-                            if override <= 0:
-                                err = "Override price must be greater than 0"
-                            elif override > 1_000_000:
-                                err = f"Override R{override:,.2f} looks like a typo — refusing to push"
-                            elif cfsa_p > 0 and (override > cfsa_p * 3 or override < cfsa_p * 0.3):
-                                err = (
-                                    f"Override R{override:,.2f} is wildly off CFSA price R{cfsa_p:,.2f}. "
-                                    "If this is intentional, change the CFSA price manually in Shopify first."
-                                )
-                            elif variant_id and not variant_id.isdigit():
-                                err = f"Stored variant ID '{variant_id}' doesn't look like a Shopify ID (digits only). Refusing to push."
-                            if err:
-                                st.error(f"✗ {err}")
-                                st.stop()
-                            try:
-                                gc_write = _write_gspread()
-                                sh_write = gc_write.open_by_key(SPREADSHEET_ID)
-                                ws_write = sh_write.worksheet("competitor_analysis_log")
-
-                                # Find row and update
-                                all_vals = ws_write.get_all_values()
-                                header_w = all_vals[0] if all_vals else []
-                                run_col  = header_w.index("run_id") if "run_id" in header_w else -1
-                                sku_col_w= header_w.index("sku")    if "sku"    in header_w else -1
-                                now_iso  = datetime.now(timezone.utc).isoformat()
-
-                                for i, r in enumerate(all_vals[1:], start=2):
-                                    if (run_col >= 0 and len(r) > run_col and r[run_col] == run_id
-                                            and sku_col_w >= 0 and len(r) > sku_col_w and r[sku_col_w] == sku):
-                                        updates = []
-                                        for col_name, val in [
-                                            ("human_override_price", f"{override:.2f}"),
-                                            ("status", "APPROVED"),
-                                            ("approved_by", "Brent"),
-                                            ("applied_at", now_iso),
-                                        ]:
-                                            if col_name in header_w:
-                                                ci = header_w.index(col_name)
-                                                updates.append(gspread.Cell(i, ci + 1, val))
-                                        if updates:
-                                            ws_write.update_cells(updates, value_input_option="USER_ENTERED")
-                                        break
-
-                                # Push to Shopify if variant ID available
-                                if variant_id:
-                                    shopify = _shopify_client()
-                                    if shopify and override > 0:
-                                        shopify.update_variant_price(variant_id, override)
-                                        st.success(f"✓ {sku} approved at R{override:,.2f} and pushed to Shopify")
-                                    else:
-                                        st.warning(f"✓ {sku} approved in sheet but Shopify credentials not configured")
-                                else:
-                                    st.success(f"✓ {sku} approved at R{override:,.2f} (no Shopify variant linked)")
-
-                                st.cache_data.clear()
-                            except Exception as exc:
-                                st.error(f"Approval failed: {exc}")
-
-                    with col_reject:
-                        if st.button("✕ Reject", key=f"ca_reject_{row_key}", use_container_width=True):
-                            try:
-                                gc_write = _write_gspread()
-                                sh_write = gc_write.open_by_key(SPREADSHEET_ID)
-                                ws_write = sh_write.worksheet("competitor_analysis_log")
-                                all_vals = ws_write.get_all_values()
-                                header_w = all_vals[0] if all_vals else []
-                                run_col  = header_w.index("run_id") if "run_id" in header_w else -1
-                                sku_col_w= header_w.index("sku")    if "sku"    in header_w else -1
-                                now_iso  = datetime.now(timezone.utc).isoformat()
-
-                                for i, r in enumerate(all_vals[1:], start=2):
-                                    if (run_col >= 0 and len(r) > run_col and r[run_col] == run_id
-                                            and sku_col_w >= 0 and len(r) > sku_col_w and r[sku_col_w] == sku):
-                                        updates = []
-                                        for col_name, val in [
-                                            ("status", "REJECTED"),
-                                            ("approved_by", "Brent"),
-                                            ("applied_at", now_iso),
-                                        ]:
-                                            if col_name in header_w:
-                                                ci = header_w.index(col_name)
-                                                updates.append(gspread.Cell(i, ci + 1, val))
-                                        if updates:
-                                            ws_write.update_cells(updates, value_input_option="USER_ENTERED")
-                                        break
-
-                                st.info(f"✕ {sku} rejected — no Shopify update made")
-                                st.cache_data.clear()
-                            except Exception as exc:
-                                st.error(f"Rejection failed: {exc}")
-
-                st.markdown("<div style='margin-bottom:4px'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='background:{G_10};border:1px solid {G}33;"
+                f"border-radius:8px;padding:10px 16px;margin-bottom:16px'>"
+                f"<span style='color:{G};font-size:.88rem'>✅ No items pending review</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2094,6 +1799,321 @@ with t7:
                 f"{len(cal_filtered):,} entries  ·  "
                 f"amber = pending review  ·  green = approved / competitive  ·  red = rejected / failed"
             )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TAB 8 — Held for Review
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+with t8:
+    cal8 = comp_analysis_log.copy() if not comp_analysis_log.empty else pd.DataFrame()
+
+    if not cal8.empty and "timestamp" in cal8.columns:
+        cal8["_ts"] = pd.to_datetime(cal8["timestamp"], errors="coerce")
+
+    def _write_gspread8():
+        if "gcp_service_account" in st.secrets:
+            creds8 = Credentials.from_service_account_info(
+                dict(st.secrets["gcp_service_account"]), scopes=WRITE_SCOPES)
+        else:
+            creds8 = Credentials.from_service_account_file(str(SA_KEY), scopes=WRITE_SCOPES)
+        return gspread.authorize(creds8)
+
+    def _shopify_client8():
+        from src.shopify_client import ShopifyClient
+        domain = st.secrets.get("shopify_shop_domain", "") or os.getenv("SHOPIFY_SHOP_DOMAIN", "")
+        token  = st.secrets.get("shopify_access_token", "") or os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+        if not domain or not token:
+            return None
+        return ShopifyClient(shop_domain=domain, access_token=token)
+
+    if cal8.empty or "status" not in cal8.columns:
+        st.markdown(f"""
+        <div class="card" style="text-align:center;padding:40px">
+          <div style="font-size:1.4rem;margin-bottom:10px">📭</div>
+          <div style="color:{T2};font-weight:600;margin-bottom:6px">No competitor analysis data yet</div>
+          <div style="color:{T3};font-size:.85rem">Run the competitor analysis from the <b>Competitor Analysis</b> tab first.</div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        # Most recent status per SKU
+        cal8_latest = cal8.copy()
+        if "_ts" in cal8_latest.columns and "sku" in cal8_latest.columns:
+            cal8_latest = (
+                cal8_latest.sort_values("_ts", ascending=False)
+                           .drop_duplicates(subset=["sku"], keep="first")
+            )
+        pending8 = cal8_latest[
+            cal8_latest["status"].isin(["PENDING_REVIEW", "MARGIN_FLOOR_HIT"])
+        ].copy()
+
+        if not pending8.empty and "_ts" in pending8.columns:
+            pending8 = pending8.sort_values(["status", "discrepancy_rand"], ascending=[True, False])
+
+        # ── Cost-data warning ─────────────────────────────────────────
+        if not pending8.empty and "cost_price" in pending8.columns:
+            no_cost8 = pending8["cost_price"].astype(str).str.strip().eq("")
+            n_missing8 = int(no_cost8.sum())
+            if n_missing8 > 0:
+                st.markdown(
+                    f"<div style='background:rgba(255,170,0,.08);border:1px solid {AMBER};"
+                    f"border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.85rem'>"
+                    f"<b style='color:{AMBER}'>⚠ {n_missing8} of {len(pending8)} products lack wholesale cost data.</b> "
+                    f"<span style='color:{T3}'>Margin floor cannot be enforced. Add <code>cost_inc</code> in the master sheet before approving.</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+        if pending8.empty:
+            st.markdown(f"""
+            <div class="card" style="text-align:center;padding:40px;border-color:{G_10}">
+              <div style="font-size:1.4rem;margin-bottom:8px">✅</div>
+              <div style="color:{T2};font-weight:600">All clear — no items held for review</div>
+              <div style="color:{T3};font-size:.83rem;margin-top:6px">
+                Products appear here when a competitor undercuts CFSA and a decision is needed.
+              </div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # Section headers
+            _section_shown = set()
+
+            for _, row8 in pending8.iterrows():
+                sku8          = str(row8.get("sku", ""))
+                product_name8 = _strip_html(str(row8.get("product_name", "")))
+                cfsa_price8   = row8.get("cfsa_current_price", "")
+                cost_price8   = row8.get("cost_price", "")
+                margin8       = row8.get("margin_pct", "")
+                ai_suggested8 = row8.get("ai_suggested_price", "")
+                disc_raw8     = row8.get("discrepancy_rand", "")
+                status_val8   = str(row8.get("status", ""))
+                run_id8       = str(row8.get("run_id", ""))
+                variant_id8   = str(row8.get("shopify_variant_id", "")) if "shopify_variant_id" in row8 else ""
+                cost_source8  = str(row8.get("cost_source", "") or "").strip()
+
+                # Section divider
+                if status_val8 not in _section_shown:
+                    _section_shown.add(status_val8)
+                    if status_val8 == "PENDING_REVIEW":
+                        st.markdown(
+                            f"<div style='font-size:.7rem;font-weight:700;letter-spacing:.1em;"
+                            f"text-transform:uppercase;color:{AMBER};margin:18px 0 10px'>"
+                            f"⚠ Pending Review — competitor is cheaper, suggest reducing price</div>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f"<div style='font-size:.7rem;font-weight:700;letter-spacing:.1em;"
+                            f"text-transform:uppercase;color:{RED};margin:18px 0 10px'>"
+                            f"🚫 Margin Floor Hit — cannot match without going below cost floor</div>",
+                            unsafe_allow_html=True,
+                        )
+
+                try:
+                    disc_val8 = float(str(disc_raw8).replace(",", ""))
+                    disc_colour8 = RED if disc_val8 > 500 else (AMBER if disc_val8 > 100 else G)
+                    disc_str8 = f"R{disc_val8:,.0f}"
+                except (ValueError, TypeError):
+                    disc_colour8 = T3
+                    disc_str8 = "—"
+
+                floor_badge8 = (
+                    f"<span class='badge' style='background:rgba(240,168,74,.1);"
+                    f"color:{AMBER};border:1px solid rgba(240,168,74,.2);margin-left:8px'>"
+                    f"MARGIN FLOOR</span>"
+                    if status_val8 == "MARGIN_FLOOR_HIT" else ""
+                )
+
+                row_key8 = f"t8_{run_id8}_{sku8}"
+
+                with st.container():
+                    col_info8, col_disc8 = st.columns([3, 1])
+                    with col_info8:
+                        st.markdown(
+                            f"<div style='font-family:{MONO};font-size:.95rem;font-weight:600;"
+                            f"color:{T1}'>{sku8}{floor_badge8}</div>"
+                            f"<div style='font-size:.82rem;color:{T2};margin-top:2px;"
+                            f"margin-bottom:6px'>{product_name8}</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with col_disc8:
+                        st.markdown(
+                            f"<div style='text-align:right'>"
+                            f"<div style='font-size:.62rem;color:{T3};text-transform:uppercase;"
+                            f"letter-spacing:.08em'>Discrepancy</div>"
+                            f"<div style='font-size:1.05rem;font-weight:700;font-family:{MONO};"
+                            f"color:{disc_colour8}'>{disc_str8}</div></div>",
+                            unsafe_allow_html=True,
+                        )
+
+                    # Competitor price chips
+                    chip_cols8 = st.columns(len(COMPETITORS))
+                    for ci8, comp8 in enumerate(COMPETITORS):
+                        col_key8 = f"{comp8['name']}_price"
+                        val8 = str(row8.get(col_key8, "")) if col_key8 in row8.index else ""
+                        price_str8 = f"R{val8}" if val8 else "—"
+                        price_colour8 = G if val8 else T3
+                        with chip_cols8[ci8]:
+                            st.markdown(
+                                f"<div style='background:{C2};border-radius:6px;padding:5px 8px;"
+                                f"text-align:center'>"
+                                f"<div style='font-size:.6rem;color:{T3};text-transform:uppercase;"
+                                f"letter-spacing:.06em;margin-bottom:2px'>{COMP_DISPLAY[comp8['name']]}</div>"
+                                f"<div style='font-family:{MONO};font-size:.8rem;font-weight:600;"
+                                f"color:{price_colour8}'>{price_str8}</div></div>",
+                                unsafe_allow_html=True,
+                            )
+
+                    # Price summary
+                    if cost_price8 and cost_source8 == "estimated":
+                        cost_html8 = (
+                            f"<span>Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cost_price8}</b>"
+                            f"&nbsp;<span style='color:{AMBER};font-size:.7rem'>(est.)</span></span>"
+                        )
+                    elif cost_price8:
+                        cost_html8 = f"<span>Cost&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cost_price8}</b></span>"
+                    else:
+                        cost_html8 = f"<span style='color:{AMBER}'>⚠ Cost not in master</span>"
+
+                    margin_html8 = (
+                        f"<span>Margin&nbsp;<b style='color:{T1}'>{margin8}</b></span>"
+                        if margin8 else f"<span style='color:{AMBER}'>Margin unknown</span>"
+                    )
+
+                    st.markdown(
+                        f"<div style='display:flex;gap:24px;font-size:.75rem;color:{T2};"
+                        f"margin-top:8px;margin-bottom:4px;padding:8px 0;border-top:1px solid {BDR}'>"
+                        f"<span>CFSA&nbsp;<b style='color:{T1};font-family:{MONO}'>R{cfsa_price8}</b></span>"
+                        f"{cost_html8}{margin_html8}"
+                        f"<span>AI Suggested&nbsp;<b style='color:{G};font-family:{MONO}'>"
+                        f"{'R'+str(ai_suggested8) if ai_suggested8 else '—'}</b></span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(f"<div style='height:1px;background:{BDR};margin-bottom:8px'></div>",
+                                unsafe_allow_html=True)
+
+                    col_inp8, col_approve8, col_reject8 = st.columns([3, 1, 1])
+                    with col_inp8:
+                        try:
+                            default_val8 = float(str(ai_suggested8).replace(",", "")) if ai_suggested8 else 0.0
+                        except ValueError:
+                            default_val8 = 0.0
+                        override8 = st.number_input(
+                            "Override price (R)",
+                            value=default_val8,
+                            min_value=0.0,
+                            step=10.0,
+                            format="%.2f",
+                            key=f"ca_override_{row_key8}",
+                            label_visibility="collapsed",
+                        )
+
+                    with col_approve8:
+                        if st.button("✓ Approve", key=f"ca_approve_{row_key8}", use_container_width=True):
+                            try:
+                                cfsa_p8 = float(row8.get("cfsa_current_price", 0) or 0)
+                            except (TypeError, ValueError):
+                                cfsa_p8 = 0.0
+                            err8: Optional[str] = None
+                            if override8 <= 0:
+                                err8 = "Override price must be greater than 0"
+                            elif override8 > 1_000_000:
+                                err8 = f"R{override8:,.2f} looks like a typo — refusing to push"
+                            elif cfsa_p8 > 0 and (override8 > cfsa_p8 * 3 or override8 < cfsa_p8 * 0.3):
+                                err8 = (
+                                    f"R{override8:,.2f} is wildly off current price R{cfsa_p8:,.2f}. "
+                                    "If intentional, update Shopify manually first."
+                                )
+                            elif variant_id8 and not variant_id8.isdigit():
+                                err8 = f"Variant ID '{variant_id8}' doesn't look valid. Refusing to push."
+                            if err8:
+                                st.error(f"✗ {err8}")
+                                st.stop()
+                            try:
+                                gc_write8 = _write_gspread8()
+                                sh_write8 = gc_write8.open_by_key(SPREADSHEET_ID)
+                                now_iso8  = datetime.now(timezone.utc).isoformat()
+
+                                # ── Update competitor_analysis_log ────────
+                                ws_cal8  = sh_write8.worksheet("competitor_analysis_log")
+                                cal_vals = ws_cal8.get_all_values()
+                                cal_hdr  = cal_vals[0] if cal_vals else []
+                                run_col8 = cal_hdr.index("run_id") if "run_id" in cal_hdr else -1
+                                sku_col8 = cal_hdr.index("sku")    if "sku"    in cal_hdr else -1
+                                for i8, r8 in enumerate(cal_vals[1:], start=2):
+                                    if (run_col8 >= 0 and len(r8) > run_col8 and r8[run_col8] == run_id8
+                                            and sku_col8 >= 0 and len(r8) > sku_col8 and r8[sku_col8] == sku8):
+                                        upd8 = []
+                                        for col_name8, val8 in [
+                                            ("human_override_price", f"{override8:.2f}"),
+                                            ("status", "APPROVED"),
+                                            ("approved_by", "Brent"),
+                                            ("applied_at", now_iso8),
+                                        ]:
+                                            if col_name8 in cal_hdr:
+                                                upd8.append(gspread.Cell(i8, cal_hdr.index(col_name8) + 1, val8))
+                                        if upd8:
+                                            ws_cal8.update_cells(upd8, value_input_option="USER_ENTERED")
+                                        break
+
+                                # ── Update master sheet selling_price ─────
+                                ws_master8 = sh_write8.worksheet("master")
+                                mst_vals   = ws_master8.get_all_values()
+                                mst_hdr    = mst_vals[0] if mst_vals else []
+                                mst_sku_c  = mst_hdr.index("sku")           if "sku"           in mst_hdr else -1
+                                mst_prc_c  = mst_hdr.index("selling_price") if "selling_price" in mst_hdr else -1
+                                if mst_sku_c >= 0 and mst_prc_c >= 0:
+                                    for mi8, mr8 in enumerate(mst_vals[1:], start=2):
+                                        if len(mr8) > mst_sku_c and mr8[mst_sku_c].strip() == sku8:
+                                            ws_master8.update_cell(mi8, mst_prc_c + 1, f"{override8:.2f}")
+                                            break
+
+                                # ── Push to Shopify ───────────────────────
+                                if variant_id8:
+                                    shopify8 = _shopify_client8()
+                                    if shopify8 and override8 > 0:
+                                        shopify8.update_variant_price(variant_id8, override8)
+                                        st.success(f"✓ {sku8} approved at R{override8:,.2f} — Shopify + master sheet updated")
+                                    else:
+                                        st.warning(f"✓ {sku8} approved in sheet but Shopify credentials not configured")
+                                else:
+                                    st.success(f"✓ {sku8} approved at R{override8:,.2f} — master sheet updated (no Shopify variant linked)")
+
+                                st.cache_data.clear()
+                            except Exception as exc8:
+                                st.error(f"Approval failed: {exc8}")
+
+                    with col_reject8:
+                        if st.button("✕ Reject", key=f"ca_reject_{row_key8}", use_container_width=True):
+                            try:
+                                gc_write8 = _write_gspread8()
+                                sh_write8 = gc_write8.open_by_key(SPREADSHEET_ID)
+                                ws_cal8   = sh_write8.worksheet("competitor_analysis_log")
+                                cal_vals  = ws_cal8.get_all_values()
+                                cal_hdr   = cal_vals[0] if cal_vals else []
+                                run_col8  = cal_hdr.index("run_id") if "run_id" in cal_hdr else -1
+                                sku_col8  = cal_hdr.index("sku")    if "sku"    in cal_hdr else -1
+                                now_iso8  = datetime.now(timezone.utc).isoformat()
+
+                                for i8, r8 in enumerate(cal_vals[1:], start=2):
+                                    if (run_col8 >= 0 and len(r8) > run_col8 and r8[run_col8] == run_id8
+                                            and sku_col8 >= 0 and len(r8) > sku_col8 and r8[sku_col8] == sku8):
+                                        upd8 = []
+                                        for col_name8, val8 in [
+                                            ("status", "REJECTED"),
+                                            ("approved_by", "Brent"),
+                                            ("applied_at", now_iso8),
+                                        ]:
+                                            if col_name8 in cal_hdr:
+                                                upd8.append(gspread.Cell(i8, cal_hdr.index(col_name8) + 1, val8))
+                                        if upd8:
+                                            ws_cal8.update_cells(upd8, value_input_option="USER_ENTERED")
+                                        break
+
+                                st.info(f"✕ {sku8} rejected — no price changes made")
+                                st.cache_data.clear()
+                            except Exception as exc8:
+                                st.error(f"Rejection failed: {exc8}")
+
+                st.markdown("<div style='margin-bottom:4px'></div>", unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────────────────────────
